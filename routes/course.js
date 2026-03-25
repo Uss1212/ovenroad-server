@@ -8,19 +8,12 @@
 const express = require('express');
 const pool = require('../db');
 const multer = require('multer');  /* 파일 업로드 도구 */
-const path = require('path');
+const { uploadToFirebase } = require('../firebase'); /* Firebase 이미지 업로드 */
 const router = express.Router();
 
 /* --- 이미지 업로드 설정 --- */
-/* uploads 폴더에 파일을 저장, 파일명은 날짜+랜덤숫자로 중복 방지 */
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, path.join(__dirname, '..', 'uploads')),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `course_${Date.now()}_${Math.round(Math.random() * 1000)}${ext}`);
-  },
-});
-const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); /* 최대 5MB */
+/* 메모리에 파일을 임시 저장 후 Firebase Storage에 업로드 */
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }); /* 최대 5MB */
 
 /* ── 1) 코스 목록 조회 ── */
 /* GET /api/courses */
@@ -79,12 +72,18 @@ router.get('/', async (req, res) => {
 
 /* ── 11) 코스 커버 이미지 업로드 ── */
 /* POST /api/courses/upload-image */
-/* 이미지 파일 1개를 서버에 저장하고 URL을 돌려줌 */
-router.post('/upload-image', upload.single('image'), (req, res) => {
-  if (!req.file) return res.status(400).json({ message: '이미지 파일이 없습니다.' });
-  /* 저장된 파일의 접근 URL을 돌려줌 */
-  const imageUrl = `/uploads/${req.file.filename}`;
-  res.json({ message: '이미지 업로드 성공', imageUrl });
+/* 이미지 파일 1개를 Firebase Storage에 저장하고 URL을 돌려줌 */
+router.post('/upload-image', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: '이미지 파일이 없습니다.' });
+    /* Firebase Storage에 업로드 */
+    const fileName = `courses/course_${Date.now()}_${Math.round(Math.random() * 1000)}${require('path').extname(req.file.originalname)}`;
+    const imageUrl = await uploadToFirebase(req.file.buffer, fileName, req.file.mimetype);
+    res.json({ message: '이미지 업로드 성공', imageUrl });
+  } catch (error) {
+    console.error('이미지 업로드 에러:', error);
+    res.status(500).json({ message: '이미지 업로드에 실패했습니다.' });
+  }
 });
 
 /* ── 8) 임시저장 하기 ── */
