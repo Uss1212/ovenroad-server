@@ -331,7 +331,7 @@ router.delete('/:userNum', async (req, res) => {
     const { password } = req.body;
 
     /* DB에서 사용자 찾기 */
-    const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE FROM USER WHERE USER_NUM = ?', [userNum]);
+    const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE, SOCIAL_TOKEN FROM USER WHERE USER_NUM = ?', [userNum]);
     if (rows.length === 0) {
       return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
     }
@@ -346,6 +346,33 @@ router.delete('/:userNum', async (req, res) => {
       const isMatch = await bcrypt.compare(password, userInfo.USER_PW);
       if (!isMatch) {
         return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
+      }
+    }
+
+    /* 소셜 로그인 연결 해제 (네이버/카카오에게 "이 사용자 연결 끊어줘!" 요청) */
+    if (userInfo.SOCIAL_TYPE && userInfo.SOCIAL_TOKEN) {
+      try {
+        if (userInfo.SOCIAL_TYPE === 'naver') {
+          /* 네이버 연결 해제 */
+          await fetch(
+            `https://nid.naver.com/oauth2.0/token?grant_type=delete`
+            + `&client_id=${NAVER_CLIENT_ID}`
+            + `&client_secret=${NAVER_CLIENT_SECRET}`
+            + `&access_token=${userInfo.SOCIAL_TOKEN}`
+            + `&service_provider=NAVER`
+          );
+          console.log('[회원탈퇴] 네이버 연결 해제 완료');
+        } else if (userInfo.SOCIAL_TYPE === 'kakao') {
+          /* 카카오 연결 해제 */
+          await fetch('https://kapi.kakao.com/v1/user/unlink', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${userInfo.SOCIAL_TOKEN}` },
+          });
+          console.log('[회원탈퇴] 카카오 연결 해제 완료');
+        }
+      } catch (unlinkError) {
+        /* 연결 해제 실패해도 탈퇴는 진행 (토큰 만료 등) */
+        console.error('소셜 연결 해제 실패:', unlinkError);
       }
     }
 
@@ -432,7 +459,8 @@ router.get('/naver/callback', async (req, res) => {
     let user;
 
     if (existingUser.length > 0) {
-      /* 이미 네이버로 가입한 적 있음 → 기존 정보 사용 */
+      /* 이미 네이버로 가입한 적 있음 → 토큰 업데이트 후 기존 정보 사용 */
+      await pool.query('UPDATE USER SET SOCIAL_TOKEN = ? WHERE USER_NUM = ?', [tokenData.access_token, existingUser[0].USER_NUM]);
       user = existingUser[0];
     } else {
       /* 같은 이메일로 이미 가입한 계정이 있는지 확인 */
@@ -441,8 +469,8 @@ router.get('/naver/callback', async (req, res) => {
       if (emailUser.length > 0) {
         /* 같은 이메일 계정이 있으면 → 네이버 정보를 연결해줌 */
         await pool.query(
-          'UPDATE USER SET SOCIAL_TYPE = ?, SOCIAL_ID = ?, PROFILE_IMAGE = COALESCE(PROFILE_IMAGE, ?) WHERE USER_NUM = ?',
-          ['naver', naverUser.id, naverUser.profile_image || null, emailUser[0].USER_NUM]
+          'UPDATE USER SET SOCIAL_TYPE = ?, SOCIAL_ID = ?, SOCIAL_TOKEN = ?, PROFILE_IMAGE = COALESCE(PROFILE_IMAGE, ?) WHERE USER_NUM = ?',
+          ['naver', naverUser.id, tokenData.access_token, naverUser.profile_image || null, emailUser[0].USER_NUM]
         );
         /* 업데이트된 사용자 정보 가져오기 */
         const [updated] = await pool.query('SELECT * FROM USER WHERE USER_NUM = ?', [emailUser[0].USER_NUM]);
@@ -457,16 +485,17 @@ router.get('/naver/callback', async (req, res) => {
           nickname = nickname + Math.floor(Math.random() * 9999);
         }
 
-        /* DB에 새 회원으로 저장 */
+        /* DB에 새 회원으로 저장 (토큰도 함께 저장) */
         const [result] = await pool.query(
-          `INSERT INTO USER (NAME, NICKNAME, EMAIL, PROFILE_IMAGE, SOCIAL_TYPE, SOCIAL_ID)
-           VALUES (?, ?, ?, ?, 'naver', ?)`,
+          `INSERT INTO USER (NAME, NICKNAME, EMAIL, PROFILE_IMAGE, SOCIAL_TYPE, SOCIAL_ID, SOCIAL_TOKEN)
+           VALUES (?, ?, ?, ?, 'naver', ?, ?)`,
           [
             naverUser.name || '네이버유저',
             nickname,
             naverUser.email || '',
             naverUser.profile_image || null,
             naverUser.id,
+            tokenData.access_token,
           ]
         );
 
@@ -563,7 +592,8 @@ router.get('/kakao/callback', async (req, res) => {
     let user;
 
     if (existingUser.length > 0) {
-      /* 이미 카카오로 가입한 적 있음 → 기존 정보 사용 */
+      /* 이미 카카오로 가입한 적 있음 → 토큰 업데이트 후 기존 정보 사용 */
+      await pool.query('UPDATE USER SET SOCIAL_TOKEN = ? WHERE USER_NUM = ?', [tokenData.access_token, existingUser[0].USER_NUM]);
       user = existingUser[0];
     } else {
       /* 이메일이 있으면 기존 계정 확인 */
@@ -572,8 +602,8 @@ router.get('/kakao/callback', async (req, res) => {
         if (emailUser.length > 0) {
           /* 같은 이메일 계정이 있으면 → 카카오 정보를 연결해줌 */
           await pool.query(
-            'UPDATE USER SET SOCIAL_TYPE = ?, SOCIAL_ID = ?, PROFILE_IMAGE = COALESCE(PROFILE_IMAGE, ?) WHERE USER_NUM = ?',
-            ['kakao', kakaoId, profileImage, emailUser[0].USER_NUM]
+            'UPDATE USER SET SOCIAL_TYPE = ?, SOCIAL_ID = ?, SOCIAL_TOKEN = ?, PROFILE_IMAGE = COALESCE(PROFILE_IMAGE, ?) WHERE USER_NUM = ?',
+            ['kakao', kakaoId, tokenData.access_token, profileImage, emailUser[0].USER_NUM]
           );
           const [updated] = await pool.query('SELECT * FROM USER WHERE USER_NUM = ?', [emailUser[0].USER_NUM]);
           user = updated[0];
@@ -592,11 +622,11 @@ router.get('/kakao/callback', async (req, res) => {
         /* 카카오는 이메일이 없을 수 있으니, 없으면 고유한 임시 이메일 생성 */
         const finalEmail = email || `kakao_${kakaoId}@kakao.temp`;
 
-        /* DB에 새 회원으로 저장 */
+        /* DB에 새 회원으로 저장 (토큰도 함께 저장) */
         const [result] = await pool.query(
-          `INSERT INTO USER (NAME, NICKNAME, EMAIL, PROFILE_IMAGE, SOCIAL_TYPE, SOCIAL_ID)
-           VALUES (?, ?, ?, ?, 'kakao', ?)`,
-          [nickname, finalNickname, finalEmail, profileImage, kakaoId]
+          `INSERT INTO USER (NAME, NICKNAME, EMAIL, PROFILE_IMAGE, SOCIAL_TYPE, SOCIAL_ID, SOCIAL_TOKEN)
+           VALUES (?, ?, ?, ?, 'kakao', ?, ?)`,
+          [nickname, finalNickname, finalEmail, profileImage, kakaoId, tokenData.access_token]
         );
 
         const [newUser] = await pool.query('SELECT * FROM USER WHERE USER_NUM = ?', [result.insertId]);
