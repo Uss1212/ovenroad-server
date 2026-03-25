@@ -5,11 +5,16 @@
    =================================================== */
 
 const admin = require('firebase-admin');
-const path = require('path');
 
 /* --- Firebase 초기화 --- */
-/* 서비스 계정 키 파일로 인증 */
-const serviceAccount = require(path.join(__dirname, 'firebase-service-account.json'));
+/* 환경변수(FIREBASE_SERVICE_ACCOUNT)에서 서비스 계정 키를 가져옴 */
+/* 환경변수가 없으면 로컬의 json 파일을 사용 (개발용) */
+let serviceAccount;
+if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+} else {
+  serviceAccount = require('./firebase-service-account.json');
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
