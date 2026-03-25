@@ -30,7 +30,8 @@ const app = express();
 /* --- 미들웨어 설정 --- */
 /* cors(): 우리 프론트엔드 주소에서만 요청 허용 (보안) */
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, ''),
+  credentials: true,
 }));
 /* express.json(): 요청 본문의 JSON 데이터를 자동으로 파싱 */
 app.use(express.json({ limit: '10mb' })); /* 이미지 base64 전송을 위해 크기 제한 늘림 */
