@@ -7,7 +7,7 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { Resend } = require('resend'); /* 이메일 보내주는 도구 (Resend API) */
+/* Brevo(구 Sendinblue) HTTP API로 이메일 보내는 도구 */
 const pool = require('../db');
 
 /* ===================================================
@@ -28,9 +28,9 @@ const KAKAO_CLIENT_ID = process.env.KAKAO_CLIENT_ID;           /* 카카오 REST
 const KAKAO_CLIENT_SECRET = process.env.KAKAO_CLIENT_SECRET;   /* 카카오 클라이언트 시크릿 */
 const KAKAO_REDIRECT_URI = process.env.KAKAO_REDIRECT_URI;     /* 카카오 로그인 후 돌아올 주소 */
 
-/* --- Resend 이메일 전송 도구 설정 --- */
-/* resend: 우체부 같은 역할 (Resend API를 통해 이메일을 보냄) */
-const resend = new Resend(process.env.RESEND_API_KEY);
+/* --- Brevo 이메일 전송 도구 설정 --- */
+/* BREVO_API_KEY: Brevo에서 발급받은 API 키 (.env에서 가져옴) */
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 /* --- 라우터 만들기 --- */
 /* 라우터: 비슷한 종류의 API를 하나로 묶어주는 도구 */
@@ -183,26 +183,41 @@ router.post('/send-email', async (req, res) => {
     emailCodes[email] = code;
 
     /* 실제 이메일 보내기! */
-    /* resend.emails.send() = 우체부에게 "이 편지 보내줘!" 하는 것 */
-    await resend.emails.send({
-      from: '오븐로드 <onboarding@resend.dev>',       /* 보내는 사람 (Resend 기본 도메인) */
-      to: email,                                      /* 받는 사람 (사용자가 입력한 이메일) */
-      subject: '[오븐로드] 이메일 인증코드',            /* 이메일 제목 */
-      html: `
-        <div style="font-family: 'Apple SD Gothic Neo', sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px;">
-          <h2 style="color: #b45309; text-align: center;">🍞 오븐로드 이메일 인증</h2>
-          <p style="color: #374151; font-size: 16px; text-align: center;">
-            아래 인증코드를 회원가입 페이지에 입력해주세요.
-          </p>
-          <div style="background: #fef3c7; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
-            <span style="font-size: 32px; font-weight: bold; color: #92400e; letter-spacing: 8px;">${code}</span>
+    /* Brevo HTTP API로 이메일 전송 (SMTP 대신 HTTP 사용 → Render 무료 플랜 호환) */
+    const emailResult = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'api-key': BREVO_API_KEY,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sender: { name: '오븐로드', email: process.env.GMAIL_USER },
+        to: [{ email: email }],
+        subject: '[오븐로드] 이메일 인증코드',
+        htmlContent: `
+          <div style="font-family: 'Apple SD Gothic Neo', sans-serif; max-width: 500px; margin: 0 auto; padding: 30px; border: 1px solid #e5e7eb; border-radius: 12px;">
+            <h2 style="color: #b45309; text-align: center;">🍞 오븐로드 이메일 인증</h2>
+            <p style="color: #374151; font-size: 16px; text-align: center;">
+              아래 인증코드를 회원가입 페이지에 입력해주세요.
+            </p>
+            <div style="background: #fef3c7; padding: 20px; border-radius: 8px; text-align: center; margin: 20px 0;">
+              <span style="font-size: 32px; font-weight: bold; color: #92400e; letter-spacing: 8px;">${code}</span>
+            </div>
+            <p style="color: #6b7280; font-size: 13px; text-align: center;">
+              본인이 요청하지 않았다면 이 이메일을 무시해주세요.
+            </p>
           </div>
-          <p style="color: #6b7280; font-size: 13px; text-align: center;">
-            본인이 요청하지 않았다면 이 이메일을 무시해주세요.
-          </p>
-        </div>
-      `,
+        `,
+      }),
     });
+
+    /* 전송 결과 확인 */
+    if (!emailResult.ok) {
+      const errData = await emailResult.json();
+      console.error('Brevo 이메일 전송 실패:', errData);
+      throw new Error('이메일 전송 실패');
+    }
 
     console.log(`[이메일 인증] ${email} → 인증코드 전송 완료`);
     res.json({ message: '인증코드가 전송되었습니다.' });
