@@ -7,7 +7,7 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer'); /* 이메일 보내주는 도구 */
+const { Resend } = require('resend'); /* 이메일 보내주는 도구 (Resend API) */
 const pool = require('../db');
 
 /* ===================================================
@@ -28,18 +28,9 @@ const KAKAO_CLIENT_ID = process.env.KAKAO_CLIENT_ID;           /* 카카오 REST
 const KAKAO_CLIENT_SECRET = process.env.KAKAO_CLIENT_SECRET;   /* 카카오 클라이언트 시크릿 */
 const KAKAO_REDIRECT_URI = process.env.KAKAO_REDIRECT_URI;     /* 카카오 로그인 후 돌아올 주소 */
 
-/* --- Gmail로 이메일 보내는 도구 설정 --- */
-/* transporter: 우체부 같은 역할 (Gmail 우체국을 통해 편지를 보냄) */
-const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',   /* Gmail SMTP 서버 주소 */
-  port: 587,                /* 587 포트 사용 */
-  secure: false,            /* 587은 STARTTLS 방식이라 false */
-  family: 4,                /* IPv4 강제 사용 (Render 호환) */
-  auth: {
-    user: process.env.GMAIL_USER,     /* 보내는 사람 이메일 주소 (.env에서 가져옴) */
-    pass: process.env.GMAIL_PASS,     /* Gmail 앱 비밀번호 (.env에서 가져옴) */
-  },
-});
+/* --- Resend 이메일 전송 도구 설정 --- */
+/* resend: 우체부 같은 역할 (Resend API를 통해 이메일을 보냄) */
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* --- 라우터 만들기 --- */
 /* 라우터: 비슷한 종류의 API를 하나로 묶어주는 도구 */
@@ -192,9 +183,9 @@ router.post('/send-email', async (req, res) => {
     emailCodes[email] = code;
 
     /* 실제 이메일 보내기! */
-    /* transporter.sendMail() = 우체부에게 "이 편지 보내줘!" 하는 것 */
-    await transporter.sendMail({
-      from: `"오븐로드" <${process.env.GMAIL_USER}>`,  /* 보내는 사람 (오븐로드 이름으로) */
+    /* resend.emails.send() = 우체부에게 "이 편지 보내줘!" 하는 것 */
+    await resend.emails.send({
+      from: '오븐로드 <onboarding@resend.dev>',       /* 보내는 사람 (Resend 기본 도메인) */
       to: email,                                      /* 받는 사람 (사용자가 입력한 이메일) */
       subject: '[오븐로드] 이메일 인증코드',            /* 이메일 제목 */
       html: `
