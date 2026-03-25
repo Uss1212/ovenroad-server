@@ -357,8 +357,8 @@ router.get('/:courseNum/comments', async (req, res) => {
         cc.COMMENT_NUM, cc.COURSE_NUM, cc.USER_NUM, cc.PARENT_NUM,
         cc.CONTENT, cc.CREATED_TIME,
         u.NICKNAME, u.PROFILE_IMAGE
-      FROM course_comment cc
-      JOIN user u ON u.USER_NUM = cc.USER_NUM
+      FROM COURSE_COMMENT cc
+      JOIN USER u ON u.USER_NUM = cc.USER_NUM
       WHERE cc.COURSE_NUM = ?
       ORDER BY cc.CREATED_TIME ASC
     `, [courseNum]);
@@ -382,15 +382,15 @@ router.post('/:courseNum/comments', async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO course_comment (COURSE_NUM, USER_NUM, PARENT_NUM, CONTENT) VALUES (?, ?, ?, ?)',
+      'INSERT INTO COURSE_COMMENT (COURSE_NUM, USER_NUM, PARENT_NUM, CONTENT) VALUES (?, ?, ?, ?)',
       [courseNum, userNum, parentNum || null, content]
     );
 
     /* 방금 작성한 댓글을 닉네임과 함께 돌려줌 */
     const [rows] = await pool.query(`
       SELECT cc.*, u.NICKNAME, u.PROFILE_IMAGE
-      FROM course_comment cc
-      JOIN user u ON u.USER_NUM = cc.USER_NUM
+      FROM COURSE_COMMENT cc
+      JOIN USER u ON u.USER_NUM = cc.USER_NUM
       WHERE cc.COMMENT_NUM = ?
     `, [result.insertId]);
 
@@ -411,7 +411,7 @@ router.delete('/:courseNum/comments/:commentNum', async (req, res) => {
 
     /* 본인이 쓴 댓글만 삭제 가능 */
     const [existing] = await pool.query(
-      'SELECT * FROM course_comment WHERE COMMENT_NUM = ? AND USER_NUM = ?',
+      'SELECT * FROM COURSE_COMMENT WHERE COMMENT_NUM = ? AND USER_NUM = ?',
       [commentNum, userNum]
     );
     if (existing.length === 0) {
@@ -419,7 +419,7 @@ router.delete('/:courseNum/comments/:commentNum', async (req, res) => {
     }
 
     /* 답글도 함께 삭제 */
-    await pool.query('DELETE FROM course_comment WHERE COMMENT_NUM = ? OR PARENT_NUM = ?', [commentNum, commentNum]);
+    await pool.query('DELETE FROM COURSE_COMMENT WHERE COMMENT_NUM = ? OR PARENT_NUM = ?', [commentNum, commentNum]);
     res.json({ message: '댓글이 삭제되었습니다.' });
   } catch (error) {
     console.error('댓글 삭제 에러:', error);
