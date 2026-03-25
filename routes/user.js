@@ -308,26 +308,30 @@ router.put('/:userNum/password', async (req, res) => {
 
 /* ── 10) 회원탈퇴 ── */
 /* DELETE /api/user/:userNum */
-/* 비밀번호를 확인한 후, 사용자 정보를 DB에서 삭제 */
+/* 일반 회원: 비밀번호 확인 후 삭제 */
+/* 소셜 로그인 회원(네이버/카카오): 비밀번호 없이 바로 삭제 */
 router.delete('/:userNum', async (req, res) => {
   try {
     const { userNum } = req.params;
     const { password } = req.body;
 
-    if (!password) {
-      return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
-    }
-
     /* DB에서 사용자 찾기 */
-    const [rows] = await pool.query('SELECT USER_PW FROM USER WHERE USER_NUM = ?', [userNum]);
+    const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE FROM USER WHERE USER_NUM = ?', [userNum]);
     if (rows.length === 0) {
       return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
     }
 
-    /* 비밀번호 확인 */
-    const isMatch = await bcrypt.compare(password, rows[0].USER_PW);
-    if (!isMatch) {
-      return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
+    const userInfo = rows[0];
+
+    /* 소셜 로그인 사용자가 아닌 경우 → 비밀번호 확인 필요 */
+    if (!userInfo.SOCIAL_TYPE) {
+      if (!password) {
+        return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
+      }
+      const isMatch = await bcrypt.compare(password, userInfo.USER_PW);
+      if (!isMatch) {
+        return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
+      }
     }
 
     /* 사용자 삭제 */
