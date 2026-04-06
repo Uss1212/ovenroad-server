@@ -29,8 +29,16 @@ const app = express();
 
 /* --- 미들웨어 설정 --- */
 /* cors(): 우리 프론트엔드 주소에서만 요청 허용 (보안) */
+/* cors(): 우리 프론트엔드 주소에서만 요청 허용 (보안) */
+/* Vercel 프리뷰 URL이 매번 바뀌므로 .vercel.app 전체 허용 */
 app.use(cors({
-  origin: (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, ''),
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (origin.endsWith('.vercel.app') || origin === 'http://localhost:5173') {
+      return callback(null, true);
+    }
+    callback(new Error('CORS 차단'));
+  },
   credentials: true,
 }));
 /* express.json(): 요청 본문의 JSON 데이터를 자동으로 파싱 */
