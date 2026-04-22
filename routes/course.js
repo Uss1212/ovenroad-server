@@ -9,32 +9,11 @@ const express = require('express');
 const pool = require('../db');
 const multer = require('multer');  /* 파일 업로드 도구 */
 const { uploadToFirebase } = require('../firebase'); /* Firebase 이미지 업로드 */
-const jwt = require('jsonwebtoken');
 const router = express.Router();
 
 /* --- 이미지 업로드 설정 --- */
 /* 메모리에 파일을 임시 저장 후 Firebase Storage에 업로드 */
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }); /* 최대 5MB */
-
-/* --- JWT 인증 미들웨어 --- */
-function authMiddleware(req, res, next) {
-  try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ message: '로그인이 필요합니다.' });
-    }
-
-    const token = authHeader.split(' ')[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    req.user = decoded;
-    next();
-  } catch (error) {
-    console.error('JWT 인증 에러:', error);
-    return res.status(401).json({ message: '유효하지 않은 토큰입니다.' });
-  }
-}
 
 /* ── 1) 코스 목록 조회 ── */
 /* GET /api/courses */
@@ -94,7 +73,7 @@ router.get('/', async (req, res) => {
 /* ── 11) 코스 커버 이미지 업로드 ── */
 /* POST /api/courses/upload-image */
 /* 이미지 파일 1개를 Firebase Storage에 저장하고 URL을 돌려줌 */
-router.post('/upload-image', authMiddleware, upload.single('image'), async (req, res) => {
+router.post('/upload-image', upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: '이미지 파일이 없습니다.' });
     /* Firebase Storage에 업로드 */
@@ -110,10 +89,9 @@ router.post('/upload-image', authMiddleware, upload.single('image'), async (req,
 /* ── 8) 임시저장 하기 ── */
 /* POST /api/courses/draft */
 /* 코스 작성 중 임시저장 (제목, 설명, 태그, 장소, 코멘트를 JSON으로 저장) */
-router.post('/draft', authMiddleware, async (req, res) => {
+router.post('/draft', async (req, res) => {
   try {
-    const userNum = req.user.userNum;
-    const { draftNum, title, description, tags, places, placeComments, coverImages } = req.body;
+    const { userNum, draftNum, title, description, tags, places, placeComments, coverImages } = req.body;
     console.log('=== 임시저장 요청 ===');
     console.log('coverImages 받은 값:', coverImages);
     console.log('req.body 전체 키:', Object.keys(req.body));
@@ -137,8 +115,8 @@ router.post('/draft', authMiddleware, async (req, res) => {
     if (targetDraftNum) {
       /* 기존 임시저장 수정 */
       await pool.query(
-        'UPDATE DRAFT_COURSE SET TITLE = ?, DESCRIPTION = ?, TAGS = ?, PLACES = ?, PLACE_COMMENTS = ?, COVER_IMAGES = ? WHERE DRAFT_NUM = ? AND USER_NUM = ?',
-        [title || '', description || '', jsonTags, jsonPlaces, jsonComments, jsonImages, targetDraftNum, userNum]
+        'UPDATE DRAFT_COURSE SET TITLE = ?, DESCRIPTION = ?, TAGS = ?, PLACES = ?, PLACE_COMMENTS = ?, COVER_IMAGES = ? WHERE DRAFT_NUM = ?',
+        [title || '', description || '', jsonTags, jsonPlaces, jsonComments, jsonImages, targetDraftNum]
       );
       res.json({ message: '임시저장이 수정되었습니다.', draftNum: targetDraftNum });
     } else {
@@ -158,14 +136,9 @@ router.post('/draft', authMiddleware, async (req, res) => {
 /* ── 9) 내 임시저장 목록 조회 ── */
 /* GET /api/courses/drafts/:userNum */
 /* ⚠️ 이 라우트는 반드시 /:courseNum 위에 있어야 함 (안 그러면 "drafts"가 courseNum으로 매칭됨) */
-router.get('/drafts/:userNum', authMiddleware, async (req, res) => {
+router.get('/drafts/:userNum', async (req, res) => {
   try {
     const { userNum } = req.params;
-
-    if (Number(userNum) !== Number(req.user.userNum)) {
-      return res.status(403).json({ message: '본인 임시저장만 조회할 수 있습니다.' });
-    }
-
     const [rows] = await pool.query(
       'SELECT * FROM DRAFT_COURSE WHERE USER_NUM = ? ORDER BY UPDATED_TIME DESC',
       [userNum]
@@ -180,24 +153,10 @@ router.get('/drafts/:userNum', authMiddleware, async (req, res) => {
 /* ── 10-1) 임시저장 수정 ── */
 /* PUT /api/courses/draft/:draftNum */
 /* 기존 임시저장을 덮어쓰기 (중복 생성 방지) */
-router.put('/draft/:draftNum', authMiddleware, async (req, res) => {
+router.put('/draft/:draftNum', async (req, res) => {
   try {
     const { draftNum } = req.params;
-    const userNum = req.user.userNum;
     const { title, description, tags, places, placeComments, coverImages } = req.body;
-
-    const [existing] = await pool.query(
-      'SELECT USER_NUM FROM DRAFT_COURSE WHERE DRAFT_NUM = ?',
-      [draftNum]
-    );
-
-    if (existing.length === 0) {
-      return res.status(404).json({ message: '임시저장을 찾을 수 없습니다.' });
-    }
-
-    if (Number(existing[0].USER_NUM) !== Number(userNum)) {
-      return res.status(403).json({ message: '본인 임시저장만 수정할 수 있습니다.' });
-    }
 
     await pool.query(
       'UPDATE DRAFT_COURSE SET TITLE = ?, DESCRIPTION = ?, TAGS = ?, PLACES = ?, PLACE_COMMENTS = ?, COVER_IMAGES = ? WHERE DRAFT_NUM = ?',
@@ -213,24 +172,9 @@ router.put('/draft/:draftNum', authMiddleware, async (req, res) => {
 
 /* ── 10) 임시저장 삭제 ── */
 /* DELETE /api/courses/draft/:draftNum */
-router.delete('/draft/:draftNum', authMiddleware, async (req, res) => {
+router.delete('/draft/:draftNum', async (req, res) => {
   try {
     const { draftNum } = req.params;
-    const userNum = req.user.userNum;
-
-    const [existing] = await pool.query(
-      'SELECT USER_NUM FROM DRAFT_COURSE WHERE DRAFT_NUM = ?',
-      [draftNum]
-    );
-
-    if (existing.length === 0) {
-      return res.status(404).json({ message: '임시저장을 찾을 수 없습니다.' });
-    }
-
-    if (Number(existing[0].USER_NUM) !== Number(userNum)) {
-      return res.status(403).json({ message: '본인 임시저장만 삭제할 수 있습니다.' });
-    }
-
     await pool.query('DELETE FROM DRAFT_COURSE WHERE DRAFT_NUM = ?', [draftNum]);
     res.json({ message: '임시저장이 삭제되었습니다.' });
   } catch (error) {
@@ -291,10 +235,9 @@ router.get('/:courseNum', async (req, res) => {
 /* ── 3) 코스 만들기 ── */
 /* POST /api/courses */
 /* body: { userNum, title, subtitle, content, places: [{ placeNum, order, memo, isThumbnail }] } */
-router.post('/', authMiddleware, async (req, res) => {
+router.post('/', async (req, res) => {
   try {
-    const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
+    const { userNum, title, subtitle, content, places, coverImage } = req.body;
 
     if (!userNum || !title || !subtitle) {
       return res.status(400).json({ message: '필수 항목을 입력해주세요.' });
@@ -328,29 +271,15 @@ router.post('/', authMiddleware, async (req, res) => {
 
 /* ── 4) 코스 수정 ── */
 /* PUT /api/courses/:courseNum */
-router.put('/:courseNum', authMiddleware, async (req, res) => {
+router.put('/:courseNum', async (req, res) => {
   try {
     const { courseNum } = req.params;
-    const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
-
-    const [courseRows] = await pool.query(
-      'SELECT USER_NUM FROM COURSES WHERE COURSE_NUM = ?',
-      [courseNum]
-    );
-
-    if (courseRows.length === 0) {
-      return res.status(404).json({ message: '코스를 찾을 수 없습니다.' });
-    }
-
-    if (Number(courseRows[0].USER_NUM) !== Number(userNum)) {
-      return res.status(403).json({ message: '본인이 만든 코스만 수정할 수 있습니다.' });
-    }
+    const { title, subtitle, content, places } = req.body;
 
     /* 코스 정보 수정 */
     await pool.query(
-      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT), COVER_IMAGE = COALESCE(?, COVER_IMAGE) WHERE COURSE_NUM = ?',
-      [title, subtitle, content, coverImage, courseNum]
+      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT) WHERE COURSE_NUM = ?',
+      [title, subtitle, content, courseNum]
     );
 
     /* 장소 정보 변경 (기존 삭제 후 다시 추가) */
@@ -376,29 +305,10 @@ router.put('/:courseNum', authMiddleware, async (req, res) => {
 
 /* ── 5) 코스 삭제 ── */
 /* DELETE /api/courses/:courseNum */
-router.delete('/:courseNum', authMiddleware, async (req, res) => {
+router.delete('/:courseNum', async (req, res) => {
   try {
     const { courseNum } = req.params;
-    const userNum = req.user.userNum;
-
-    const [courseRows] = await pool.query(
-      'SELECT USER_NUM FROM COURSES WHERE COURSE_NUM = ?',
-      [courseNum]
-    );
-
-    if (courseRows.length === 0) {
-      return res.status(404).json({ message: '코스를 찾을 수 없습니다.' });
-    }
-
-    if (Number(courseRows[0].USER_NUM) !== Number(userNum)) {
-      return res.status(403).json({ message: '본인이 만든 코스만 삭제할 수 있습니다.' });
-    }
-
-    await pool.query('DELETE FROM COURSE_PLACE WHERE COURSE_NUM = ?', [courseNum]);
-    await pool.query('DELETE FROM COURSE_LIKE WHERE COURSE_NUM = ?', [courseNum]);
-    await pool.query('DELETE FROM COURSE_SCRAP WHERE COURSE_NUM = ?', [courseNum]);
     await pool.query('DELETE FROM COURSES WHERE COURSE_NUM = ?', [courseNum]);
-
     res.json({ message: '코스가 삭제되었습니다.' });
   } catch (error) {
     console.error('코스 삭제 에러:', error);
@@ -409,10 +319,10 @@ router.delete('/:courseNum', authMiddleware, async (req, res) => {
 /* ── 6) 코스 좋아요 토글 ── */
 /* POST /api/courses/:courseNum/like */
 /* body: { userNum } */
-router.post('/:courseNum/like', authMiddleware, async (req, res) => {
+router.post('/:courseNum/like', async (req, res) => {
   try {
     const { courseNum } = req.params;
-    const userNum = req.user.userNum;
+    const { userNum } = req.body;
 
     /* 이미 좋아요 했는지 확인 */
     const [existing] = await pool.query(
@@ -435,13 +345,94 @@ router.post('/:courseNum/like', authMiddleware, async (req, res) => {
   }
 });
 
+/* ── 12) 코스 댓글 목록 조회 ── */
+/* GET /api/courses/:courseNum/comments */
+/* 댓글 + 답글을 모두 가져옴 (작성자 닉네임 포함) */
+router.get('/:courseNum/comments', async (req, res) => {
+  try {
+    const { courseNum } = req.params;
+    const [rows] = await pool.query(`
+      SELECT
+        cc.COMMENT_NUM, cc.COURSE_NUM, cc.USER_NUM, cc.PARENT_NUM,
+        cc.CONTENT, cc.CREATED_TIME,
+        u.NICKNAME, u.PROFILE_IMAGE
+      FROM COURSE_COMMENT cc
+      JOIN USER u ON u.USER_NUM = cc.USER_NUM
+      WHERE cc.COURSE_NUM = ?
+      ORDER BY cc.CREATED_TIME ASC
+    `, [courseNum]);
+    res.json(rows);
+  } catch (error) {
+    console.error('댓글 조회 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 13) 코스 댓글 작성 ── */
+/* POST /api/courses/:courseNum/comments */
+/* body: { userNum, content, parentNum(선택) } */
+router.post('/:courseNum/comments', async (req, res) => {
+  try {
+    const { courseNum } = req.params;
+    const { userNum, content, parentNum } = req.body;
+
+    if (!userNum || !content) {
+      return res.status(400).json({ message: '내용을 입력해주세요.' });
+    }
+
+    const [result] = await pool.query(
+      'INSERT INTO COURSE_COMMENT (COURSE_NUM, USER_NUM, PARENT_NUM, CONTENT) VALUES (?, ?, ?, ?)',
+      [courseNum, userNum, parentNum || null, content]
+    );
+
+    /* 방금 작성한 댓글을 닉네임과 함께 돌려줌 */
+    const [rows] = await pool.query(`
+      SELECT cc.*, u.NICKNAME, u.PROFILE_IMAGE
+      FROM COURSE_COMMENT cc
+      JOIN USER u ON u.USER_NUM = cc.USER_NUM
+      WHERE cc.COMMENT_NUM = ?
+    `, [result.insertId]);
+
+    res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error('댓글 작성 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 14) 코스 댓글 삭제 ── */
+/* DELETE /api/courses/:courseNum/comments/:commentNum */
+/* body: { userNum } */
+router.delete('/:courseNum/comments/:commentNum', async (req, res) => {
+  try {
+    const { commentNum } = req.params;
+    const { userNum } = req.body;
+
+    /* 본인이 쓴 댓글만 삭제 가능 */
+    const [existing] = await pool.query(
+      'SELECT * FROM COURSE_COMMENT WHERE COMMENT_NUM = ? AND USER_NUM = ?',
+      [commentNum, userNum]
+    );
+    if (existing.length === 0) {
+      return res.status(403).json({ message: '삭제 권한이 없습니다.' });
+    }
+
+    /* 답글도 함께 삭제 */
+    await pool.query('DELETE FROM COURSE_COMMENT WHERE COMMENT_NUM = ? OR PARENT_NUM = ?', [commentNum, commentNum]);
+    res.json({ message: '댓글이 삭제되었습니다.' });
+  } catch (error) {
+    console.error('댓글 삭제 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 7) 코스 스크랩 토글 ── */
 /* POST /api/courses/:courseNum/scrap */
 /* body: { userNum } */
-router.post('/:courseNum/scrap', authMiddleware, async (req, res) => {
+router.post('/:courseNum/scrap', async (req, res) => {
   try {
     const { courseNum } = req.params;
-    const userNum = req.user.userNum;
+    const { userNum } = req.body;
 
     const [existing] = await pool.query(
       'SELECT * FROM COURSE_SCRAP WHERE COURSE_NUM = ? AND USER_NUM = ?',
