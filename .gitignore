@@ -5,3 +5,5 @@ node_modules
 firebase-service-account.json
 ovenroad_dump.sql
 *.log
+.project
+.settings/
