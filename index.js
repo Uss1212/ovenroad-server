@@ -55,6 +55,18 @@ app.use('/api/places', placeRouter);
 app.use('/api/notice', noticeRouter);
 app.use('/api/upload', uploadRouter); /* /api/upload/xxx → uploadRouter가 처리 */
 
+/* --- DB 마이그레이션: COVER_IMAGES 컬럼 추가 --- */
+const pool = require('./db');
+(async () => {
+  try {
+    const [cols] = await pool.query("SHOW COLUMNS FROM COURSES LIKE 'COVER_IMAGES'");
+    if (cols.length === 0) {
+      await pool.query("ALTER TABLE COURSES ADD COLUMN COVER_IMAGES TEXT NULL AFTER COVER_IMAGE");
+      console.log('COVER_IMAGES 컬럼 추가 완료');
+    }
+  } catch (e) { console.warn('COVER_IMAGES 마이그레이션 스킵:', e.message); }
+})();
+
 /* --- 서버 상태 확인용 API --- */
 /* GET / → 서버가 살아있는지 확인 */
 app.get('/', (req, res) => {

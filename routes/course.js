@@ -244,6 +244,7 @@ router.delete('/draft/:draftNum', authMiddleware, async (req, res) => {
 router.get('/:courseNum', async (req, res) => {
   try {
     const { courseNum } = req.params;
+    const userNum = req.query.userNum || null;
 
     /* 코스 기본 정보 */
     const [courses] = await pool.query(`
@@ -278,9 +279,20 @@ router.get('/:courseNum', async (req, res) => {
       ORDER BY cp.PLACE_ORDER ASC
     `, [courseNum]);
 
+    let isLiked = false;
+    let isScrapped = false;
+    if (userNum) {
+      const [likeRows] = await pool.query('SELECT 1 FROM COURSE_LIKE WHERE COURSE_NUM = ? AND USER_NUM = ?', [courseNum, userNum]);
+      const [scrapRows] = await pool.query('SELECT 1 FROM COURSE_SCRAP WHERE COURSE_NUM = ? AND USER_NUM = ?', [courseNum, userNum]);
+      isLiked = likeRows.length > 0;
+      isScrapped = scrapRows.length > 0;
+    }
+
     res.json({
       ...courses[0],
       places: places,
+      isLiked,
+      isScrapped,
     });
   } catch (error) {
     console.error('코스 상세 조회 에러:', error);
@@ -294,16 +306,19 @@ router.get('/:courseNum', async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
+    const { title, subtitle, content, places, coverImage, coverImages } = req.body;
 
     if (!userNum || !title || !subtitle) {
       return res.status(400).json({ message: '필수 항목을 입력해주세요.' });
     }
 
-    /* 코스 저장 (커버 이미지 포함) */
+    const mainImage = coverImage || (coverImages && coverImages.length > 0 ? coverImages[0] : null);
+    const allImages = coverImages && coverImages.length > 0 ? JSON.stringify(coverImages) : null;
+
+    /* 코스 저장 (대표이미지 + 전체 이미지) */
     const [result] = await pool.query(
-      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE) VALUES (?, ?, ?, ?, ?)',
-      [userNum, title, subtitle, content || null, coverImage || null]
+      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE, COVER_IMAGES) VALUES (?, ?, ?, ?, ?, ?)',
+      [userNum, title, subtitle, content || null, mainImage, allImages]
     );
 
     const courseNum = result.insertId;
