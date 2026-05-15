@@ -7,3 +7,5 @@ ovenroad_dump.sql
 *.log
 .project
 .settings/
+
+.DS_Store
