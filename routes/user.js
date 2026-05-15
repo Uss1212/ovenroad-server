@@ -9,6 +9,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 /* Brevo(구 Sendinblue) HTTP API로 이메일 보내는 도구 */
 const pool = require('../db');
+const jwt = require('jsonwebtoken');
 
 /* ===================================================
    네이버 로그인 OAuth 설정
@@ -39,6 +40,67 @@ const router = express.Router();
 /* --- 이메일 인증코드 임시 저장소 --- */
 /* 나중에 Redis 같은 것으로 교체 예정 */
 const emailCodes = {};
+
+/* --- JWT 설정 --- */
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_EXPIRES = process.env.JWT_EXPIRES || '7d';
+
+function createToken(user) {
+  return jwt.sign(
+    {
+      userNum: user.USER_NUM,
+      id: user.ID,
+      email: user.EMAIL,
+      grade: user.GRADE,
+      socialType: user.SOCIAL_TYPE || null,
+    },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES }
+  );
+}
+
+function authMiddleware(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: '로그인이 필요합니다.' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    req.user = decoded;
+    next();
+  } catch (error) {
+    console.error('JWT 인증 에러:', error);
+    return res.status(401).json({ message: '유효하지 않은 토큰입니다.' });
+  }
+}
+
+function requireSameUser(req, res, next) {
+  const paramUserNum = Number(req.params.userNum);
+  const tokenUserNum = Number(req.user.userNum);
+
+  if (paramUserNum !== tokenUserNum) {
+    return res.status(403).json({ message: '본인만 접근할 수 있습니다.' });
+  }
+
+  next();
+}
+
+function userResponse(user) {
+  return {
+    userNum: user.USER_NUM,
+    id: user.ID,
+    name: user.NAME,
+    nickname: user.NICKNAME,
+    email: user.EMAIL,
+    grade: user.GRADE,
+    profileImage: user.PROFILE_IMAGE,
+    socialType: user.SOCIAL_TYPE || null,
+  };
+}
 
 /* ── 1) 회원가입 ── */
 /* POST /api/user/signup */
@@ -99,6 +161,10 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: '이메일과 비밀번호를 입력해주세요.' });
     }
 
+    if (!JWT_SECRET) {
+      return res.status(500).json({ message: 'JWT_SECRET이 설정되지 않았습니다.' });
+    }
+
     /* DB에서 사용자 찾기 (이메일 = 아이디) */
     const [rows] = await pool.query('SELECT * FROM USER WHERE EMAIL = ?', [id]);
     if (rows.length === 0) {
@@ -114,17 +180,12 @@ router.post('/login', async (req, res) => {
     }
 
     /* 로그인 성공 → 비밀번호 빼고 응답 */
+    const token = createToken(user);
+
     res.json({
       message: '로그인 성공',
-      user: {
-        userNum: user.USER_NUM,
-        id: user.ID,
-        name: user.NAME,
-        nickname: user.NICKNAME,
-        email: user.EMAIL,
-        grade: user.GRADE,
-        profileImage: user.PROFILE_IMAGE,
-      },
+      token,
+      user: userResponse(user),
     });
   } catch (error) {
     console.error('로그인 에러:', error);
@@ -246,146 +307,6 @@ router.post('/verify-email', async (req, res) => {
   }
 });
 
-/* ── 7) 회원정보 조회 ── */
-/* GET /api/user/:userNum */
-router.get('/:userNum', async (req, res) => {
-  try {
-    const { userNum } = req.params;
-    const [rows] = await pool.query(
-      'SELECT USER_NUM, ID, NAME, NICKNAME, EMAIL, GRADE, PROFILE_IMAGE, SOCIAL_TYPE FROM USER WHERE USER_NUM = ?',
-      [userNum]
-    );
-
-    if (rows.length === 0) {
-      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
-    }
-
-    res.json(rows[0]);
-  } catch (error) {
-    console.error('회원정보 조회 에러:', error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
-  }
-});
-
-/* ── 8) 회원정보 수정 ── */
-/* PUT /api/user/:userNum */
-router.put('/:userNum', async (req, res) => {
-  try {
-    const { userNum } = req.params;
-    const { nickname, email, profileImage } = req.body;
-
-    await pool.query(
-      'UPDATE USER SET NICKNAME = COALESCE(?, NICKNAME), EMAIL = COALESCE(?, EMAIL), PROFILE_IMAGE = COALESCE(?, PROFILE_IMAGE) WHERE USER_NUM = ?',
-      [nickname, email, profileImage, userNum]
-    );
-
-    res.json({ message: '회원정보가 수정되었습니다.' });
-  } catch (error) {
-    console.error('회원정보 수정 에러:', error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
-  }
-});
-
-/* ── 9) 비밀번호 변경 ── */
-/* PUT /api/user/:userNum/password */
-/* 현재 비밀번호를 확인한 후, 새 비밀번호로 변경 */
-router.put('/:userNum/password', async (req, res) => {
-  try {
-    const { userNum } = req.params;
-    const { currentPassword, newPassword } = req.body;
-
-    if (!currentPassword || !newPassword) {
-      return res.status(400).json({ message: '현재 비밀번호와 새 비밀번호를 입력해주세요.' });
-    }
-
-    /* DB에서 사용자 찾기 */
-    const [rows] = await pool.query('SELECT USER_PW FROM USER WHERE USER_NUM = ?', [userNum]);
-    if (rows.length === 0) {
-      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
-    }
-
-    /* 현재 비밀번호가 맞는지 확인 */
-    const isMatch = await bcrypt.compare(currentPassword, rows[0].USER_PW);
-    if (!isMatch) {
-      return res.status(401).json({ message: '현재 비밀번호가 올바르지 않습니다.' });
-    }
-
-    /* 새 비밀번호 암호화 후 저장 */
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await pool.query('UPDATE USER SET USER_PW = ? WHERE USER_NUM = ?', [hashedPassword, userNum]);
-
-    res.json({ message: '비밀번호가 변경되었습니다.' });
-  } catch (error) {
-    console.error('비밀번호 변경 에러:', error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
-  }
-});
-
-/* ── 10) 회원탈퇴 ── */
-/* DELETE /api/user/:userNum */
-/* 일반 회원: 비밀번호 확인 후 삭제 */
-/* 소셜 로그인 회원(네이버/카카오): 비밀번호 없이 바로 삭제 */
-router.delete('/:userNum', async (req, res) => {
-  try {
-    const { userNum } = req.params;
-    const { password } = req.body;
-
-    /* DB에서 사용자 찾기 */
-    const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE, SOCIAL_TOKEN FROM USER WHERE USER_NUM = ?', [userNum]);
-    if (rows.length === 0) {
-      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
-    }
-
-    const userInfo = rows[0];
-
-    /* 소셜 로그인 사용자가 아닌 경우 → 비밀번호 확인 필요 */
-    if (!userInfo.SOCIAL_TYPE) {
-      if (!password) {
-        return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
-      }
-      const isMatch = await bcrypt.compare(password, userInfo.USER_PW);
-      if (!isMatch) {
-        return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
-      }
-    }
-
-    /* 소셜 로그인 연결 해제 (네이버/카카오에게 "이 사용자 연결 끊어줘!" 요청) */
-    if (userInfo.SOCIAL_TYPE && userInfo.SOCIAL_TOKEN) {
-      try {
-        if (userInfo.SOCIAL_TYPE === 'naver') {
-          /* 네이버 연결 해제 */
-          await fetch(
-            `https://nid.naver.com/oauth2.0/token?grant_type=delete`
-            + `&client_id=${NAVER_CLIENT_ID}`
-            + `&client_secret=${NAVER_CLIENT_SECRET}`
-            + `&access_token=${userInfo.SOCIAL_TOKEN}`
-            + `&service_provider=NAVER`
-          );
-          console.log('[회원탈퇴] 네이버 연결 해제 완료');
-        } else if (userInfo.SOCIAL_TYPE === 'kakao') {
-          /* 카카오 연결 해제 */
-          await fetch('https://kapi.kakao.com/v1/user/unlink', {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${userInfo.SOCIAL_TOKEN}` },
-          });
-          console.log('[회원탈퇴] 카카오 연결 해제 완료');
-        }
-      } catch (unlinkError) {
-        /* 연결 해제 실패해도 탈퇴는 진행 (토큰 만료 등) */
-        console.error('소셜 연결 해제 실패:', unlinkError);
-      }
-    }
-
-    /* 사용자 삭제 */
-    await pool.query('DELETE FROM USER WHERE USER_NUM = ?', [userNum]);
-
-    res.json({ message: '회원탈퇴가 완료되었습니다.' });
-  } catch (error) {
-    console.error('회원탈퇴 에러:', error);
-    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
-  }
-});
-
 /* ── 11) 네이버 로그인 - 네이버 로그인 페이지로 이동 ── */
 /* GET /api/user/naver/login */
 /* 프론트에서 이 주소로 요청하면 → 네이버 로그인 페이지로 보내줌 */
@@ -395,10 +316,10 @@ router.get('/naver/login', (req, res) => {
 
   /* 네이버 로그인 페이지 주소 만들기 */
   const naverAuthUrl = `https://nid.naver.com/oauth2.0/authorize`
-    + `?response_type=code`             /* "코드를 줘!" 라고 요청 */
-    + `&client_id=${NAVER_CLIENT_ID}`    /* 우리 앱의 ID */
-    + `&redirect_uri=${encodeURIComponent(NAVER_REDIRECT_URI)}` /* 로그인 후 돌아올 주소 */
-    + `&state=${state}`;                 /* 보안용 랜덤 문자열 */
+    + `?response_type=code`
+    + `&client_id=${NAVER_CLIENT_ID}`
+    + `&redirect_uri=${encodeURIComponent(NAVER_REDIRECT_URI)}`
+    + `&state=${state}`;
 
   /* 네이버 로그인 페이지로 이동시킴 */
   res.redirect(naverAuthUrl);
@@ -415,10 +336,10 @@ router.get('/naver/callback', async (req, res) => {
     /* 토큰 = 네이버한테 "이 사람 정보 줘!" 할 때 쓰는 열쇠 */
     const tokenResponse = await fetch(
       `https://nid.naver.com/oauth2.0/token`
-      + `?grant_type=authorization_code`    /* "코드를 토큰으로 바꿔줘!" */
+      + `?grant_type=authorization_code`
       + `&client_id=${NAVER_CLIENT_ID}`
       + `&client_secret=${NAVER_CLIENT_SECRET}`
-      + `&code=${code}`                     /* 네이버가 보내준 코드 */
+      + `&code=${code}`
       + `&state=${state}`
     );
     const tokenData = await tokenResponse.json();
@@ -431,7 +352,7 @@ router.get('/naver/callback', async (req, res) => {
     /* "이 열쇠로 이 사람 정보 보여줘!" */
     const profileResponse = await fetch('https://openapi.naver.com/v1/nid/me', {
       headers: {
-        Authorization: `Bearer ${tokenData.access_token}`, /* 열쇠(토큰)를 보여줌 */
+        Authorization: `Bearer ${tokenData.access_token}`,
       },
     });
     const profileData = await profileResponse.json();
@@ -442,13 +363,6 @@ router.get('/naver/callback', async (req, res) => {
 
     /* 네이버에서 받은 사용자 정보 꺼내기 */
     const naverUser = profileData.response;
-    /* naverUser 안에 들어있는 것들:
-       - id: 네이버 고유 번호
-       - email: 이메일
-       - name: 이름
-       - nickname: 닉네임
-       - profile_image: 프로필 사진 주소
-    */
 
     /* --- 3단계: 우리 DB에 사용자가 있는지 확인 --- */
     const [existingUser] = await pool.query(
@@ -461,7 +375,8 @@ router.get('/naver/callback', async (req, res) => {
     if (existingUser.length > 0) {
       /* 이미 네이버로 가입한 적 있음 → 토큰 업데이트 후 기존 정보 사용 */
       await pool.query('UPDATE USER SET SOCIAL_TOKEN = ? WHERE USER_NUM = ?', [tokenData.access_token, existingUser[0].USER_NUM]);
-      user = existingUser[0];
+      const [updatedUser] = await pool.query('SELECT * FROM USER WHERE USER_NUM = ?', [existingUser[0].USER_NUM]);
+      user = updatedUser[0];
     } else {
       /* 같은 이메일로 이미 가입한 계정이 있는지 확인 */
       const [emailUser] = await pool.query('SELECT * FROM USER WHERE EMAIL = ?', [naverUser.email]);
@@ -505,20 +420,14 @@ router.get('/naver/callback', async (req, res) => {
       }
     }
 
+    const appToken = createToken(user);
+
     /* --- 4단계: 프론트엔드로 사용자 정보 전달 --- */
     /* URL에 사용자 정보를 붙여서 프론트엔드로 보내줌 */
-    const userData = encodeURIComponent(JSON.stringify({
-      userNum: user.USER_NUM,
-      id: user.ID,
-      name: user.NAME,
-      nickname: user.NICKNAME,
-      email: user.EMAIL,
-      grade: user.GRADE,
-      profileImage: user.PROFILE_IMAGE,
-      socialType: user.SOCIAL_TYPE,
-    }));
+    const userData = encodeURIComponent(JSON.stringify(userResponse(user)));
+    const encodedToken = encodeURIComponent(appToken);
 
-    res.redirect(`${process.env.FRONTEND_URL}/login/naver-callback?user=${userData}`);
+    res.redirect(`${process.env.FRONTEND_URL}/login/naver-callback?user=${userData}&token=${encodedToken}`);
   } catch (error) {
     console.error('네이버 로그인 에러:', error);
     res.redirect(`${process.env.FRONTEND_URL}/login?error=naver_server_error`);
@@ -531,9 +440,9 @@ router.get('/naver/callback', async (req, res) => {
 router.get('/kakao/login', (req, res) => {
   /* 카카오 로그인 페이지 주소 만들기 */
   const kakaoAuthUrl = `https://kauth.kakao.com/oauth/authorize`
-    + `?response_type=code`              /* "코드를 줘!" 라고 요청 */
-    + `&client_id=${KAKAO_CLIENT_ID}`     /* 우리 앱의 REST API 키 */
-    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`; /* 로그인 후 돌아올 주소 */
+    + `?response_type=code`
+    + `&client_id=${KAKAO_CLIENT_ID}`
+    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`;
 
   /* 카카오 로그인 페이지로 이동시킴 */
   res.redirect(kakaoAuthUrl);
@@ -552,17 +461,16 @@ router.get('/kakao/callback', async (req, res) => {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type: 'authorization_code',   /* "코드를 토큰으로 바꿔줘!" */
-        client_id: KAKAO_CLIENT_ID,          /* 우리 앱의 REST API 키 */
-        client_secret: KAKAO_CLIENT_SECRET,  /* 클라이언트 시크릿 키 */
-        redirect_uri: KAKAO_REDIRECT_URI,    /* 콜백 주소 */
-        code: code,                          /* 카카오가 보내준 코드 */
+        grant_type: 'authorization_code',
+        client_id: KAKAO_CLIENT_ID,
+        client_secret: KAKAO_CLIENT_SECRET,
+        redirect_uri: KAKAO_REDIRECT_URI,
+        code: code,
       }),
     });
     const tokenData = await tokenResponse.json();
 
     if (tokenData.error) {
-      /* 에러 내용을 서버 콘솔에 출력 (디버깅용) */
       console.error('카카오 토큰 에러:', tokenData);
       return res.redirect(`${process.env.FRONTEND_URL}/login?error=kakao_token_failed`);
     }
@@ -571,16 +479,15 @@ router.get('/kakao/callback', async (req, res) => {
     /* "이 열쇠로 이 사람 정보 보여줘!" */
     const profileResponse = await fetch('https://kapi.kakao.com/v2/user/me', {
       headers: {
-        Authorization: `Bearer ${tokenData.access_token}`, /* 열쇠(토큰)를 보여줌 */
+        Authorization: `Bearer ${tokenData.access_token}`,
       },
     });
     const profileData = await profileResponse.json();
 
     /* 카카오에서 받은 사용자 정보 꺼내기 */
-    const kakaoId = String(profileData.id);                          /* 카카오 고유 번호 */
-    const nickname = profileData.properties?.nickname || '카카오유저'; /* 닉네임 */
-    const profileImage = profileData.properties?.profile_image || null; /* 프로필 사진 */
-    /* 카카오는 이메일을 비즈앱만 받을 수 있어서, 없으면 빈 문자열 */
+    const kakaoId = String(profileData.id);
+    const nickname = profileData.properties?.nickname || '카카오유저';
+    const profileImage = profileData.properties?.profile_image || null;
     const email = profileData.kakao_account?.email || '';
 
     /* --- 3단계: 우리 DB에 사용자가 있는지 확인 --- */
@@ -594,7 +501,8 @@ router.get('/kakao/callback', async (req, res) => {
     if (existingUser.length > 0) {
       /* 이미 카카오로 가입한 적 있음 → 토큰 업데이트 후 기존 정보 사용 */
       await pool.query('UPDATE USER SET SOCIAL_TOKEN = ? WHERE USER_NUM = ?', [tokenData.access_token, existingUser[0].USER_NUM]);
-      user = existingUser[0];
+      const [updatedUser] = await pool.query('SELECT * FROM USER WHERE USER_NUM = ?', [existingUser[0].USER_NUM]);
+      user = updatedUser[0];
     } else {
       /* 이메일이 있으면 기존 계정 확인 */
       if (email) {
@@ -634,19 +542,13 @@ router.get('/kakao/callback', async (req, res) => {
       }
     }
 
-    /* --- 4단계: 프론트엔드로 사용자 정보 전달 --- */
-    const userData = encodeURIComponent(JSON.stringify({
-      userNum: user.USER_NUM,
-      id: user.ID,
-      name: user.NAME,
-      nickname: user.NICKNAME,
-      email: user.EMAIL,
-      grade: user.GRADE,
-      profileImage: user.PROFILE_IMAGE,
-      socialType: user.SOCIAL_TYPE,
-    }));
+    const appToken = createToken(user);
 
-    res.redirect(`${process.env.FRONTEND_URL}/login/kakao-callback?user=${userData}`);
+    /* --- 4단계: 프론트엔드로 사용자 정보 전달 --- */
+    const userData = encodeURIComponent(JSON.stringify(userResponse(user)));
+    const encodedToken = encodeURIComponent(appToken);
+
+    res.redirect(`${process.env.FRONTEND_URL}/login/kakao-callback?user=${userData}&token=${encodedToken}`);
   } catch (error) {
     console.error('카카오 로그인 에러:', error);
     res.redirect(`${process.env.FRONTEND_URL}/login?error=kakao_server_error`);
@@ -741,10 +643,10 @@ router.post('/reset-password', async (req, res) => {
 /* ── 14-3) 리뷰 삭제 ── */
 /* DELETE /api/user/reviews/:reviewNum */
 /* 마이페이지에서 내가 쓴 리뷰를 삭제할 때 사용 */
-router.delete('/reviews/:reviewNum', async (req, res) => {
+router.delete('/reviews/:reviewNum', authMiddleware, async (req, res) => {
   try {
     const { reviewNum } = req.params;
-    const { userNum } = req.body;
+    const userNum = req.user.userNum;
 
     /* 본인 리뷰인지 확인 */
     const [review] = await pool.query('SELECT * FROM PLACE_REVIEW WHERE REVIEW_NUM = ? AND USER_NUM = ?', [reviewNum, userNum]);
@@ -760,18 +662,162 @@ router.delete('/reviews/:reviewNum', async (req, res) => {
   }
 });
 
+/* ── 7) 회원정보 조회 ── */
+/* GET /api/user/:userNum */
+router.get('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    const [rows] = await pool.query(
+      'SELECT USER_NUM, ID, NAME, NICKNAME, EMAIL, GRADE, PROFILE_IMAGE, SOCIAL_TYPE FROM USER WHERE USER_NUM = ?',
+      [userNum]
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    res.json(rows[0]);
+  } catch (error) {
+    console.error('회원정보 조회 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 8) 회원정보 수정 ── */
+/* PUT /api/user/:userNum */
+router.put('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    const { nickname, email, profileImage } = req.body;
+
+    await pool.query(
+      'UPDATE USER SET NICKNAME = COALESCE(?, NICKNAME), EMAIL = COALESCE(?, EMAIL), PROFILE_IMAGE = COALESCE(?, PROFILE_IMAGE) WHERE USER_NUM = ?',
+      [nickname, email, profileImage, userNum]
+    );
+
+    res.json({ message: '회원정보가 수정되었습니다.' });
+  } catch (error) {
+    console.error('회원정보 수정 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 9) 비밀번호 변경 ── */
+/* PUT /api/user/:userNum/password */
+/* 현재 비밀번호를 확인한 후, 새 비밀번호로 변경 */
+router.put('/:userNum/password', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: '현재 비밀번호와 새 비밀번호를 입력해주세요.' });
+    }
+
+    /* DB에서 사용자 찾기 */
+    const [rows] = await pool.query('SELECT USER_PW FROM USER WHERE USER_NUM = ?', [userNum]);
+    if (rows.length === 0) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    /* 현재 비밀번호가 맞는지 확인 */
+    const isMatch = await bcrypt.compare(currentPassword, rows[0].USER_PW);
+    if (!isMatch) {
+      return res.status(401).json({ message: '현재 비밀번호가 올바르지 않습니다.' });
+    }
+
+    /* 새 비밀번호 암호화 후 저장 */
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.query('UPDATE USER SET USER_PW = ? WHERE USER_NUM = ?', [hashedPassword, userNum]);
+
+    res.json({ message: '비밀번호가 변경되었습니다.' });
+  } catch (error) {
+    console.error('비밀번호 변경 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 10) 회원탈퇴 ── */
+/* DELETE /api/user/:userNum */
+/* 일반 회원: 비밀번호 확인 후 삭제 */
+/* 소셜 로그인 회원(네이버/카카오): 비밀번호 없이 바로 삭제 */
+router.delete('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    const { password } = req.body;
+
+    /* DB에서 사용자 찾기 */
+    const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE, SOCIAL_TOKEN FROM USER WHERE USER_NUM = ?', [userNum]);
+    if (rows.length === 0) {
+      return res.status(404).json({ message: '사용자를 찾을 수 없습니다.' });
+    }
+
+    const userInfo = rows[0];
+
+    /* 소셜 로그인 사용자가 아닌 경우 → 비밀번호 확인 필요 */
+    if (!userInfo.SOCIAL_TYPE) {
+      if (!password) {
+        return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
+      }
+      const isMatch = await bcrypt.compare(password, userInfo.USER_PW);
+      if (!isMatch) {
+        return res.status(401).json({ message: '비밀번호가 올바르지 않습니다.' });
+      }
+    }
+
+    /* 소셜 로그인 연결 해제 (네이버/카카오에게 "이 사용자 연결 끊어줘!" 요청) */
+    if (userInfo.SOCIAL_TYPE && userInfo.SOCIAL_TOKEN) {
+      try {
+        if (userInfo.SOCIAL_TYPE === 'naver') {
+          /* 네이버 연결 해제 */
+          await fetch(
+            `https://nid.naver.com/oauth2.0/token?grant_type=delete`
+            + `&client_id=${NAVER_CLIENT_ID}`
+            + `&client_secret=${NAVER_CLIENT_SECRET}`
+            + `&access_token=${userInfo.SOCIAL_TOKEN}`
+            + `&service_provider=NAVER`
+          );
+          console.log('[회원탈퇴] 네이버 연결 해제 완료');
+        } else if (userInfo.SOCIAL_TYPE === 'kakao') {
+          /* 카카오 연결 해제 */
+          await fetch('https://kapi.kakao.com/v1/user/unlink', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${userInfo.SOCIAL_TOKEN}` },
+          });
+          console.log('[회원탈퇴] 카카오 연결 해제 완료');
+        }
+      } catch (unlinkError) {
+        /* 연결 해제 실패해도 탈퇴는 진행 (토큰 만료 등) */
+        console.error('소셜 연결 해제 실패:', unlinkError);
+      }
+    }
+
+    /* 사용자 삭제 */
+    await pool.query('DELETE FROM USER WHERE USER_NUM = ?', [userNum]);
+
+    res.json({ message: '회원탈퇴가 완료되었습니다.' });
+  } catch (error) {
+    console.error('회원탈퇴 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 15) 내가 만든 코스 목록 ── */
 /* GET /api/user/:userNum/my-courses */
 /* 마이페이지에서 내가 만든 코스를 보여줄 때 사용 */
-router.get('/:userNum/my-courses', async (req, res) => {
+router.get('/:userNum/my-courses', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         (SELECT COUNT(*) FROM COURSE_LIKE cl WHERE cl.COURSE_NUM = c.COURSE_NUM) AS likeCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSES c
       WHERE c.USER_NUM = ?
       ORDER BY c.CREATED_TIME DESC
@@ -787,7 +833,7 @@ router.get('/:userNum/my-courses', async (req, res) => {
 /* ── 16) 내가 남긴 리뷰 목록 ── */
 /* GET /api/user/:userNum/my-reviews */
 /* 마이페이지에서 내가 작성한 리뷰를 보여줄 때 사용 */
-router.get('/:userNum/my-reviews', async (req, res) => {
+router.get('/:userNum/my-reviews', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
@@ -811,16 +857,20 @@ router.get('/:userNum/my-reviews', async (req, res) => {
 /* ── 17) 좋아요한 코스 목록 ── */
 /* GET /api/user/:userNum/liked-courses */
 /* 마이페이지에서 내가 좋아요 누른 코스를 보여줄 때 사용 */
-router.get('/:userNum/liked-courses', async (req, res) => {
+router.get('/:userNum/liked-courses', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         u.NICKNAME AS author,
         (SELECT COUNT(*) FROM COURSE_LIKE cl2 WHERE cl2.COURSE_NUM = c.COURSE_NUM) AS likeCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSE_LIKE cl
       JOIN COURSES c ON c.COURSE_NUM = cl.COURSE_NUM
       JOIN USER u ON u.USER_NUM = c.USER_NUM
@@ -838,16 +888,20 @@ router.get('/:userNum/liked-courses', async (req, res) => {
 /* ── 18) 스크랩한 코스 목록 ── */
 /* GET /api/user/:userNum/scraped-courses */
 /* 마이페이지에서 내가 스크랩한 코스를 보여줄 때 사용 */
-router.get('/:userNum/scraped-courses', async (req, res) => {
+router.get('/:userNum/scraped-courses', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         u.NICKNAME AS author,
         (SELECT COUNT(*) FROM COURSE_SCRAP cs2 WHERE cs2.COURSE_NUM = c.COURSE_NUM) AS scrapCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSE_SCRAP cs
       JOIN COURSES c ON c.COURSE_NUM = cs.COURSE_NUM
       JOIN USER u ON u.USER_NUM = c.USER_NUM
@@ -862,25 +916,32 @@ router.get('/:userNum/scraped-courses', async (req, res) => {
   }
 });
 
-/* ── 19) 내가 작성한 질문(게시글) 목록 ── */
+/* ── 19) 내가 작성한 질문(문의) 목록 ── */
 /* GET /api/user/:userNum/my-posts */
-/* 마이페이지에서 내가 쓴 커뮤니티 글을 보여줄 때 사용 */
-router.get('/:userNum/my-posts', async (req, res) => {
+/* 마이페이지에서 내가 쓴 QNA(문의) 목록을 보여줄 때 사용 */
+/* QUESTION 테이블 기준으로 조회하며, 기존 프론트엔드 호환을 위해 BOARD_NUM 필드명으로 alias */
+router.get('/:userNum/my-posts', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
     const [rows] = await pool.query(`
       SELECT
-        b.BOARD_NUM, b.CATEGORY, b.TITLE, b.CONTENT, b.VIEWS, b.CREATED_TIME,
-        (SELECT COUNT(*) FROM BOARD_COMMENT bc WHERE bc.BOARD_NUM = b.BOARD_NUM) AS commentCount
-      FROM BOARD b
-      WHERE b.USER_NUM = ?
-      ORDER BY b.CREATED_TIME DESC
+        q.QUESTION_NUM AS BOARD_NUM,
+        q.QUESTION_NUM,
+        q.TITLE,
+        q.CONTENT,
+        q.STATUS,
+        q.CREATED_TIME,
+        (SELECT COUNT(*) FROM ANSWER a WHERE a.QUESTION_NUM = q.QUESTION_NUM) AS commentCount,
+        (SELECT COUNT(*) FROM ANSWER a WHERE a.QUESTION_NUM = q.QUESTION_NUM) AS answerCount
+      FROM QUESTION q
+      WHERE q.USER_NUM = ?
+      ORDER BY q.CREATED_TIME DESC
     `, [userNum]);
 
     res.json(rows);
   } catch (error) {
-    console.error('내 게시글 조회 에러:', error);
+    console.error('내 문의 조회 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });

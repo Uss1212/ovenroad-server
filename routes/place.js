@@ -7,7 +7,33 @@
 
 const express = require('express');
 const pool = require('../db');
+const jwt = require('jsonwebtoken');
 const router = express.Router();
+
+/* --- JWT 인증 미들웨어 --- */
+function authMiddleware(req, res, next) {
+  try {
+    const authHeader = req.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ message: '로그인이 필요합니다.' });
+    }
+
+    const token = authHeader.split(' ')[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    req.user = decoded;
+    next();
+  } catch (error) {
+    console.error('JWT 인증 에러:', error);
+    return res.status(401).json({ message: '유효하지 않은 토큰입니다.' });
+  }
+}
+
+function isAdmin(user) {
+  if (!user) return false;
+  return user.grade === 'admin' || user.grade === 1 || user.grade === '1';
+}
 
 /* ── 0) 인기 메뉴 태그 목록 ── */
 /* GET /api/places/tags */
@@ -32,10 +58,9 @@ router.get('/tags', async (req, res) => {
 
 /* ── 1) 장소 목록 조회 (검색 + 필터) ── */
 /* GET /api/places */
-/* ?keyword=크로와상 &region=마포구 &category=베이커리 &menu=크로와상 */
 router.get('/', async (req, res) => {
   try {
-    const { keyword, region, category, menu } = req.query;
+    const { keyword, region, category, menu, sort, limit } = req.query;
 
     let query = `
       SELECT
@@ -79,7 +104,17 @@ router.get('/', async (req, res) => {
       params.push(category);
     }
 
-    query += ' ORDER BY p.PLACE_NUM DESC';
+    if (sort === 'rating') {
+      query += ' AND (SELECT COUNT(*) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) > 0';
+      query += ' ORDER BY avgRating DESC, reviewCount DESC, p.PLACE_NUM DESC';
+    } else {
+      query += ' ORDER BY p.PLACE_NUM DESC';
+    }
+
+    const limitNum = parseInt(limit, 10);
+    if (!Number.isNaN(limitNum) && limitNum > 0 && limitNum <= 100) {
+      query += ` LIMIT ${limitNum}`;
+    }
 
     const [rows] = await pool.query(query, params);
     res.json(rows);
@@ -157,12 +192,16 @@ router.get('/:placeNum', async (req, res) => {
 
 /* ── 3) 장소 등록 ── */
 /* POST /api/places */
-router.post('/', async (req, res) => {
+router.post('/', authMiddleware, async (req, res) => {
   try {
     const { placeName, address, latitude, longitude, images, categories } = req.body;
 
     if (!placeName) {
       return res.status(400).json({ message: '장소 이름을 입력해주세요.' });
+    }
+
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ message: '관리자만 장소를 등록할 수 있습니다.' });
     }
 
     /* 장소 기본 정보 저장 */
@@ -192,12 +231,114 @@ router.post('/', async (req, res) => {
   }
 });
 
-/* ── 4) 리뷰 작성 ── */
-/* POST /api/places/:placeNum/reviews */
-router.post('/:placeNum/reviews', async (req, res) => {
+/* ── 6) 장소 수정 ── */
+/* PUT /api/places/:placeNum */
+/* body: { placeName, address, latitude, longitude, images, categories } */
+router.put('/:placeNum', authMiddleware, async (req, res) => {
   try {
     const { placeNum } = req.params;
-    const { userNum, rating, content } = req.body;
+    const { placeName, address, latitude, longitude, images, categories } = req.body;
+
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ message: '관리자만 장소를 수정할 수 있습니다.' });
+    }
+
+    const [existing] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE PLACE_NUM = ?',
+      [placeNum]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    /* 기본 정보 수정 */
+    await pool.query(
+      `UPDATE PLACES
+       SET PLACE_NAME = COALESCE(?, PLACE_NAME),
+           ADDRESS = COALESCE(?, ADDRESS),
+           LATITUDE = COALESCE(?, LATITUDE),
+           LONGITUDE = COALESCE(?, LONGITUDE)
+       WHERE PLACE_NUM = ?`,
+      [placeName ?? null, address ?? null, latitude ?? null, longitude ?? null, placeNum]
+    );
+
+    /* images가 배열로 오면 기존 이미지 전체 교체 */
+    if (Array.isArray(images)) {
+      await pool.query('DELETE FROM PLACE_IMAGE WHERE PLACE_NUM = ?', [placeNum]);
+
+      if (images.length > 0) {
+        const imageValues = images.map(url => [placeNum, url]);
+        await pool.query(
+          'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES ?',
+          [imageValues]
+        );
+      }
+    }
+
+    /* categories가 배열로 오면 기존 카테고리 전체 교체 */
+    if (Array.isArray(categories)) {
+      await pool.query('DELETE FROM PLACE_CATEGORY WHERE PLACE_NUM = ?', [placeNum]);
+
+      if (categories.length > 0) {
+        const catValues = categories.map(name => [placeNum, name]);
+        await pool.query(
+          'INSERT INTO PLACE_CATEGORY (PLACE_NUM, CATEGORY_NAME) VALUES ?',
+          [catValues]
+        );
+      }
+    }
+
+    res.json({ message: '장소가 수정되었습니다.' });
+  } catch (error) {
+    console.error('장소 수정 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 7) 장소 삭제 ── */
+/* DELETE /api/places/:placeNum */
+router.delete('/:placeNum', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+
+    if (!isAdmin(req.user)) {
+      return res.status(403).json({ message: '관리자만 장소를 삭제할 수 있습니다.' });
+    }
+
+    const [existing] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE PLACE_NUM = ?',
+      [placeNum]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    /* 연관 데이터 먼저 삭제 */
+    await pool.query('DELETE FROM PLACE_REVIEW WHERE PLACE_NUM = ?', [placeNum]);
+    await pool.query('DELETE FROM PLACE_IMAGE WHERE PLACE_NUM = ?', [placeNum]);
+    await pool.query('DELETE FROM PLACE_CATEGORY WHERE PLACE_NUM = ?', [placeNum]);
+    await pool.query('DELETE FROM PLACE_MENU WHERE PLACE_NUM = ?', [placeNum]);
+    await pool.query('DELETE FROM COURSE_PLACE WHERE PLACE_NUM = ?', [placeNum]);
+
+    /* 장소 삭제 */
+    await pool.query('DELETE FROM PLACES WHERE PLACE_NUM = ?', [placeNum]);
+
+    res.json({ message: '장소가 삭제되었습니다.' });
+  } catch (error) {
+    console.error('장소 삭제 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 4) 리뷰 작성 ── */
+/* POST /api/places/:placeNum/reviews */
+router.post('/:placeNum/reviews', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const { rating, content } = req.body;
+    const userNum = req.user.userNum;
 
     if (!userNum) {
       return res.status(400).json({ message: '로그인이 필요합니다.' });
@@ -215,11 +356,90 @@ router.post('/:placeNum/reviews', async (req, res) => {
   }
 });
 
+/* ── 5-1) 리뷰 수정 ── */
+/* PUT /api/places/:placeNum/reviews/:reviewNum */
+/* body: { userNum, rating, content } */
+router.put('/:placeNum/reviews/:reviewNum', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum, reviewNum } = req.params;
+    const { rating, content } = req.body;
+    const userNum = req.user.userNum;
+
+    if (!userNum) {
+      return res.status(400).json({ message: '로그인이 필요합니다.' });
+    }
+
+    /* 본인 리뷰인지 확인 */
+    const [existing] = await pool.query(
+      'SELECT REVIEW_NUM, USER_NUM, PLACE_NUM FROM PLACE_REVIEW WHERE REVIEW_NUM = ?',
+      [reviewNum]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: '리뷰를 찾을 수 없습니다.' });
+    }
+
+    if (Number(existing[0].USER_NUM) !== Number(userNum)) {
+      return res.status(403).json({ message: '본인이 작성한 리뷰만 수정할 수 있습니다.' });
+    }
+
+    if (Number(existing[0].PLACE_NUM) !== Number(placeNum)) {
+      return res.status(400).json({ message: '잘못된 장소 리뷰 요청입니다.' });
+    }
+
+    await pool.query(
+      `UPDATE PLACE_REVIEW
+       SET RATING = COALESCE(?, RATING),
+           CONTENT = COALESCE(?, CONTENT)
+       WHERE REVIEW_NUM = ?`,
+      [rating ?? null, content ?? null, reviewNum]
+    );
+
+    const [updated] = await pool.query(`
+      SELECT pr.*, u.NICKNAME, u.PROFILE_IMAGE
+      FROM PLACE_REVIEW pr
+      JOIN USER u ON u.USER_NUM = pr.USER_NUM
+      WHERE pr.REVIEW_NUM = ?
+    `, [reviewNum]);
+
+    res.json({
+      message: '리뷰가 수정되었습니다.',
+      review: updated[0],
+    });
+  } catch (error) {
+    console.error('리뷰 수정 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 5) 리뷰 삭제 ── */
 /* DELETE /api/places/:placeNum/reviews/:reviewNum */
-router.delete('/:placeNum/reviews/:reviewNum', async (req, res) => {
+router.delete('/:placeNum/reviews/:reviewNum', authMiddleware, async (req, res) => {
   try {
-    const { reviewNum } = req.params;
+    const { placeNum, reviewNum } = req.params;
+    const userNum = req.user.userNum;
+
+    if (!userNum) {
+      return res.status(400).json({ message: '로그인이 필요합니다.' });
+    }
+
+    const [existing] = await pool.query(
+      'SELECT REVIEW_NUM, USER_NUM, PLACE_NUM FROM PLACE_REVIEW WHERE REVIEW_NUM = ?',
+      [reviewNum]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: '리뷰를 찾을 수 없습니다.' });
+    }
+
+    if (Number(existing[0].USER_NUM) !== Number(userNum)) {
+      return res.status(403).json({ message: '본인이 작성한 리뷰만 삭제할 수 있습니다.' });
+    }
+
+    if (Number(existing[0].PLACE_NUM) !== Number(placeNum)) {
+      return res.status(400).json({ message: '잘못된 장소 리뷰 요청입니다.' });
+    }
+
     await pool.query('DELETE FROM PLACE_REVIEW WHERE REVIEW_NUM = ?', [reviewNum]);
     res.json({ message: '리뷰가 삭제되었습니다.' });
   } catch (error) {
