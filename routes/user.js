@@ -919,7 +919,6 @@ router.get('/:userNum/scraped-courses', authMiddleware, requireSameUser, async (
 /* ── 19) 내가 작성한 질문(문의) 목록 ── */
 /* GET /api/user/:userNum/my-posts */
 /* 마이페이지에서 내가 쓴 QNA(문의) 목록을 보여줄 때 사용 */
-/* QUESTION 테이블 기준으로 조회하며, 기존 프론트엔드 호환을 위해 BOARD_NUM 필드명으로 alias */
 router.get('/:userNum/my-posts', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;

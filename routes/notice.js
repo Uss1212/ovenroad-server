@@ -492,7 +492,6 @@ router.delete('/question/:questionNum', authMiddleware, async (req, res) => {
     res.status(500).json({ message: '문의 삭제에 실패했습니다.' });
   }
 });
-
 /* ── 8) 답변 작성 ── */
 /* POST /api/notice/question/:questionNum/answer */
 router.post('/question/:questionNum/answer', authMiddleware, async (req, res) => {
