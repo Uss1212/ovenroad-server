@@ -396,7 +396,7 @@ router.get('/question/:questionNum', authMiddleware, async (req, res) => {
 /* POST /api/notice/question */
 router.post('/question', authMiddleware, async (req, res) => {
   try {
-    const { title, content } = req.body;
+    const { title, content, isPrivate } = req.body;
     const userNum = req.user.userNum;
 
     if (!title || !title.trim()) {
@@ -404,8 +404,8 @@ router.post('/question', authMiddleware, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO QUESTION (USER_NUM, TITLE, CONTENT) VALUES (?, ?, ?)',
-      [userNum, title.trim(), content || null]
+      'INSERT INTO QUESTION (USER_NUM, TITLE, CONTENT, IS_PRIVATE) VALUES (?, ?, ?, ?)',
+      [userNum, title.trim(), content || null, isPrivate ? 1 : 0]
     );
     res.status(201).json({ message: '문의가 등록되었습니다.', questionNum: result.insertId });
   } catch (error) {
@@ -419,7 +419,7 @@ router.post('/question', authMiddleware, async (req, res) => {
 router.put('/question/:questionNum', authMiddleware, async (req, res) => {
   try {
     const { questionNum } = req.params;
-    const { title, content } = req.body;
+    const { title, content, isPrivate } = req.body;
     const userNum = req.user.userNum;
 
     const [existing] = await pool.query(
@@ -448,8 +448,8 @@ router.put('/question/:questionNum', authMiddleware, async (req, res) => {
     }
 
     await pool.query(
-      'UPDATE QUESTION SET TITLE = COALESCE(?, TITLE), CONTENT = COALESCE(?, CONTENT) WHERE QUESTION_NUM = ?',
-      [title ? title.trim() : null, content ?? null, questionNum]
+      'UPDATE QUESTION SET TITLE = COALESCE(?, TITLE), CONTENT = COALESCE(?, CONTENT), IS_PRIVATE = COALESCE(?, IS_PRIVATE) WHERE QUESTION_NUM = ?',
+      [title ? title.trim() : null, content ?? null, isPrivate !== undefined ? (isPrivate ? 1 : 0) : null, questionNum]
     );
 
     res.json({ message: '문의가 수정되었습니다.' });

@@ -19,6 +19,19 @@ async function runMigrations() {
     { col: 'COVER_IMAGES', type: 'JSON' },
     { col: 'TAGS', type: 'JSON' },
   ];
+  const questionMigrations = [
+    { table: 'QUESTION', col: 'IS_PRIVATE', type: 'TINYINT(1) NOT NULL DEFAULT 0' },
+  ];
+  for (const m of questionMigrations) {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=? AND COLUMN_NAME=?`,
+      [m.table, m.col]
+    );
+    if (rows[0].cnt === 0) {
+      await pool.query(`ALTER TABLE ${m.table} ADD COLUMN ${m.col} ${m.type}`);
+      console.log(`마이그레이션: ${m.table}.${m.col} 컬럼 추가 완료`);
+    }
+  }
   for (const m of migrations) {
     const [rows] = await pool.query(
       `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='COURSES' AND COLUMN_NAME=?`,
