@@ -294,16 +294,15 @@ router.get('/:courseNum', async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
+    const { title, subtitle, content, places, coverImage, coverImages } = req.body;
 
     if (!userNum || !title || !subtitle) {
       return res.status(400).json({ message: '필수 항목을 입력해주세요.' });
     }
 
-    /* 코스 저장 (커버 이미지 포함) */
     const [result] = await pool.query(
-      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE) VALUES (?, ?, ?, ?, ?)',
-      [userNum, title, subtitle, content || null, coverImage || null]
+      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE, COVER_IMAGES) VALUES (?, ?, ?, ?, ?, ?)',
+      [userNum, title, subtitle, content || null, coverImage || null, JSON.stringify(coverImages || [])]
     );
 
     const courseNum = result.insertId;

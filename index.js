@@ -10,7 +10,11 @@ const placeRouter = require('./routes/place');
 const noticeRouter = require('./routes/notice');
 const uploadRouter = require('./routes/upload');
 
+const pool = require('./db');
+
 const app = express();
+
+pool.query(`ALTER TABLE COURSES ADD COLUMN IF NOT EXISTS COVER_IMAGES JSON`).catch(() => {});
 
 
 app.use(cors({
