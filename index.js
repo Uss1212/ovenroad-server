@@ -14,8 +14,23 @@ const pool = require('./db');
 
 const app = express();
 
-pool.query(`ALTER TABLE COURSES ADD COLUMN IF NOT EXISTS COVER_IMAGES JSON`).catch(() => {});
-pool.query(`ALTER TABLE COURSES ADD COLUMN IF NOT EXISTS TAGS JSON`).catch(() => {});
+async function runMigrations() {
+  const migrations = [
+    { col: 'COVER_IMAGES', type: 'JSON' },
+    { col: 'TAGS', type: 'JSON' },
+  ];
+  for (const m of migrations) {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='COURSES' AND COLUMN_NAME=?`,
+      [m.col]
+    );
+    if (rows[0].cnt === 0) {
+      await pool.query(`ALTER TABLE COURSES ADD COLUMN ${m.col} ${m.type}`);
+      console.log(`마이그레이션: COURSES.${m.col} 컬럼 추가 완료`);
+    }
+  }
+}
+runMigrations().catch(err => console.error('마이그레이션 에러:', err.message));
 
 
 app.use(cors({
