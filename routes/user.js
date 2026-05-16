@@ -229,7 +229,25 @@ router.get('/check-nickname', async (req, res) => {
   }
 });
 
-/* ── 5) 이메일 인증코드 전송 (Gmail SMTP) ── */
+/* ── 5) 이메일 중복확인 ── */
+/* GET /api/user/check-email?email=xxx */
+router.get('/check-email', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ message: '이메일을 입력해주세요.' });
+
+    const [rows] = await pool.query('SELECT USER_NUM FROM USER WHERE EMAIL = ?', [email]);
+    if (rows.length > 0) {
+      return res.status(409).json({ message: '이미 사용 중인 이메일입니다.', available: false });
+    }
+    res.json({ available: true });
+  } catch (error) {
+    console.error('이메일 중복확인 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 6) 이메일 인증코드 전송 ── */
 /* POST /api/user/send-email */
 /* 사용자가 입력한 이메일 주소로 6자리 인증코드를 실제로 보냄 */
 router.post('/send-email', async (req, res) => {
@@ -698,6 +716,9 @@ router.put('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
     res.json({ message: '회원정보가 수정되었습니다.' });
   } catch (error) {
     console.error('회원정보 수정 에러:', error);
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: '이미 사용 중인 이메일입니다.' });
+    }
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });
