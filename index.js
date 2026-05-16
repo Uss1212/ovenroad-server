@@ -15,6 +15,7 @@ const pool = require('./db');
 const app = express();
 
 pool.query(`ALTER TABLE COURSES ADD COLUMN IF NOT EXISTS COVER_IMAGES JSON`).catch(() => {});
+pool.query(`ALTER TABLE COURSES ADD COLUMN IF NOT EXISTS TAGS JSON`).catch(() => {});
 
 
 app.use(cors({
