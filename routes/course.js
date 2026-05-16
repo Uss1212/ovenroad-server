@@ -331,7 +331,7 @@ router.put('/:courseNum', authMiddleware, async (req, res) => {
   try {
     const { courseNum } = req.params;
     const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
+    const { title, subtitle, content, places, coverImage, coverImages } = req.body;
 
     const [courseRows] = await pool.query(
       'SELECT USER_NUM FROM COURSES WHERE COURSE_NUM = ?',
@@ -346,10 +346,9 @@ router.put('/:courseNum', authMiddleware, async (req, res) => {
       return res.status(403).json({ message: '본인이 만든 코스만 수정할 수 있습니다.' });
     }
 
-    /* 코스 정보 수정 */
     await pool.query(
-      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT), COVER_IMAGE = COALESCE(?, COVER_IMAGE) WHERE COURSE_NUM = ?',
-      [title, subtitle, content, coverImage, courseNum]
+      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT), COVER_IMAGE = COALESCE(?, COVER_IMAGE), COVER_IMAGES = COALESCE(?, COVER_IMAGES) WHERE COURSE_NUM = ?',
+      [title, subtitle, content, coverImage, coverImages ? JSON.stringify(coverImages) : null, courseNum]
     );
 
     /* 장소 정보 변경 (기존 삭제 후 다시 추가) */
