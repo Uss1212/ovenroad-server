@@ -7,9 +7,12 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-/* Brevo(구 Sendinblue) HTTP API로 이메일 보내는 도구 */
+const multer = require('multer');
+const { uploadToFirebase } = require('../firebase');
 const pool = require('../db');
 const jwt = require('jsonwebtoken');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 /* ===================================================
    네이버 로그인 OAuth 설정
@@ -697,6 +700,36 @@ router.get('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
     res.json(rows[0]);
   } catch (error) {
     console.error('회원정보 조회 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 7-1) 프로필 이미지 업로드 ── */
+/* POST /api/user/:userNum/profile-image */
+router.post('/:userNum/profile-image', authMiddleware, requireSameUser, upload.single('image'), async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    if (!req.file) return res.status(400).json({ message: '이미지 파일이 없습니다.' });
+    const ext = require('path').extname(req.file.originalname);
+    const fileName = `profiles/profile_${userNum}_${Date.now()}${ext}`;
+    const imageUrl = await uploadToFirebase(req.file.buffer, fileName, req.file.mimetype);
+    await pool.query('UPDATE USER SET PROFILE_IMAGE = ? WHERE USER_NUM = ?', [imageUrl, userNum]);
+    res.json({ message: '프로필 이미지가 업로드되었습니다.', imageUrl });
+  } catch (error) {
+    console.error('프로필 이미지 업로드 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 7-2) 프로필 이미지 삭제 ── */
+/* DELETE /api/user/:userNum/profile-image */
+router.delete('/:userNum/profile-image', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    await pool.query('UPDATE USER SET PROFILE_IMAGE = NULL WHERE USER_NUM = ?', [userNum]);
+    res.json({ message: '프로필 이미지가 삭제되었습니다.' });
+  } catch (error) {
+    console.error('프로필 이미지 삭제 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });
