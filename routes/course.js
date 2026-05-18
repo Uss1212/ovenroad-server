@@ -400,7 +400,8 @@ router.delete('/:courseNum', authMiddleware, async (req, res) => {
       return res.status(404).json({ message: '코스를 찾을 수 없습니다.' });
     }
 
-    if (Number(courseRows[0].USER_NUM) !== Number(userNum)) {
+    const isAdmin = req.user.grade === 'admin' || req.user.grade === 1 || req.user.grade === '1';
+    if (Number(courseRows[0].USER_NUM) !== Number(userNum) && !isAdmin) {
       return res.status(403).json({ message: '본인이 만든 코스만 삭제할 수 있습니다.' });
     }
 

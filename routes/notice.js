@@ -240,8 +240,8 @@ router.post('/faq', authMiddleware, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO FAQ (QUESTION, ANSWER, DISPLAY_ORDER) VALUES (?, ?, ?)',
-      [question.trim(), answer.trim(), displayOrder ?? 0]
+      'INSERT INTO FAQ (USER_NUM, FAQ_QUESTION, FAQ_ANSWER, DISPLAY_ORDER) VALUES (?, ?, ?, ?)',
+      [req.user.userNum, question.trim(), answer.trim(), displayOrder ?? 0]
     );
 
     res.status(201).json({
@@ -277,8 +277,8 @@ router.put('/faq/:faqNum', authMiddleware, async (req, res) => {
 
     await pool.query(
       `UPDATE FAQ
-       SET QUESTION = COALESCE(?, QUESTION),
-           ANSWER = COALESCE(?, ANSWER),
+       SET FAQ_QUESTION = COALESCE(?, FAQ_QUESTION),
+           FAQ_ANSWER = COALESCE(?, FAQ_ANSWER),
            DISPLAY_ORDER = COALESCE(?, DISPLAY_ORDER)
        WHERE FAQ_NUM = ?`,
       [question || null, answer || null, displayOrder ?? null, faqNum]
