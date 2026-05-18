@@ -306,19 +306,15 @@ router.get('/:courseNum', async (req, res) => {
 router.post('/', authMiddleware, async (req, res) => {
   try {
     const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage, coverImages } = req.body;
+    const { title, subtitle, content, places, coverImage, coverImages, tags } = req.body;
 
     if (!userNum || !title || !subtitle) {
       return res.status(400).json({ message: '필수 항목을 입력해주세요.' });
     }
 
-    const mainImage = coverImage || (coverImages && coverImages.length > 0 ? coverImages[0] : null);
-    const allImages = coverImages && coverImages.length > 0 ? JSON.stringify(coverImages) : null;
-
-    /* 코스 저장 (대표이미지 + 전체 이미지) */
     const [result] = await pool.query(
-      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE, COVER_IMAGES) VALUES (?, ?, ?, ?, ?, ?)',
-      [userNum, title, subtitle, content || null, mainImage, allImages]
+      'INSERT INTO COURSES (USER_NUM, TITLE, SUBTITLE, CONTENT, COVER_IMAGE, COVER_IMAGES, TAGS) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [userNum, title, subtitle, content || null, coverImage || null, JSON.stringify(coverImages || []), JSON.stringify(tags || [])]
     );
 
     const courseNum = result.insertId;
@@ -347,7 +343,7 @@ router.put('/:courseNum', authMiddleware, async (req, res) => {
   try {
     const { courseNum } = req.params;
     const userNum = req.user.userNum;
-    const { title, subtitle, content, places, coverImage } = req.body;
+    const { title, subtitle, content, places, coverImage, coverImages, tags } = req.body;
 
     const [courseRows] = await pool.query(
       'SELECT USER_NUM FROM COURSES WHERE COURSE_NUM = ?',
@@ -362,10 +358,9 @@ router.put('/:courseNum', authMiddleware, async (req, res) => {
       return res.status(403).json({ message: '본인이 만든 코스만 수정할 수 있습니다.' });
     }
 
-    /* 코스 정보 수정 */
     await pool.query(
-      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT), COVER_IMAGE = COALESCE(?, COVER_IMAGE) WHERE COURSE_NUM = ?',
-      [title, subtitle, content, coverImage, courseNum]
+      'UPDATE COURSES SET TITLE = COALESCE(?, TITLE), SUBTITLE = COALESCE(?, SUBTITLE), CONTENT = COALESCE(?, CONTENT), COVER_IMAGE = COALESCE(?, COVER_IMAGE), COVER_IMAGES = COALESCE(?, COVER_IMAGES), TAGS = COALESCE(?, TAGS) WHERE COURSE_NUM = ?',
+      [title, subtitle, content, coverImage, coverImages ? JSON.stringify(coverImages) : null, tags ? JSON.stringify(tags) : null, courseNum]
     );
 
     /* 장소 정보 변경 (기존 삭제 후 다시 추가) */

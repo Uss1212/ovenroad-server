@@ -396,7 +396,7 @@ router.get('/question/:questionNum', authMiddleware, async (req, res) => {
 /* POST /api/notice/question */
 router.post('/question', authMiddleware, async (req, res) => {
   try {
-    const { title, content } = req.body;
+    const { title, content, isPrivate } = req.body;
     const userNum = req.user.userNum;
 
     if (!title || !title.trim()) {
@@ -404,13 +404,58 @@ router.post('/question', authMiddleware, async (req, res) => {
     }
 
     const [result] = await pool.query(
-      'INSERT INTO QUESTION (USER_NUM, TITLE, CONTENT) VALUES (?, ?, ?)',
-      [userNum, title.trim(), content || null]
+      'INSERT INTO QUESTION (USER_NUM, TITLE, CONTENT, IS_PRIVATE) VALUES (?, ?, ?, ?)',
+      [userNum, title.trim(), content || null, isPrivate ? 1 : 0]
     );
     res.status(201).json({ message: '문의가 등록되었습니다.', questionNum: result.insertId });
   } catch (error) {
     console.error('문의 작성 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* 문의 수정 */
+/* PUT /api/notice/question/:questionNum */
+router.put('/question/:questionNum', authMiddleware, async (req, res) => {
+  try {
+    const { questionNum } = req.params;
+    const { title, content, isPrivate } = req.body;
+    const userNum = req.user.userNum;
+
+    const [existing] = await pool.query(
+      'SELECT USER_NUM, STATUS FROM QUESTION WHERE QUESTION_NUM = ?',
+      [questionNum]
+    );
+
+    if (existing.length === 0) {
+      return res.status(404).json({ message: '문의를 찾을 수 없습니다.' });
+    }
+
+    if (Number(existing[0].USER_NUM) !== Number(userNum)) {
+      const admin = isAdmin(req.user);
+      if (!admin) {
+        return res.status(403).json({ message: '본인이 작성한 문의만 수정할 수 있습니다.' });
+      }
+    }
+
+    /* 이미 답변이 달린 문의는 작성자가 수정 불가 (관리자는 가능) */
+    if (existing[0].STATUS === 1 && !isAdmin(req.user)) {
+      return res.status(400).json({ message: '답변이 등록된 문의는 수정할 수 없습니다.' });
+    }
+
+    if ((!title || !title.trim()) && (content === undefined || content === null)) {
+      return res.status(400).json({ message: '수정할 내용을 입력해주세요.' });
+    }
+
+    await pool.query(
+      'UPDATE QUESTION SET TITLE = COALESCE(?, TITLE), CONTENT = COALESCE(?, CONTENT), IS_PRIVATE = COALESCE(?, IS_PRIVATE) WHERE QUESTION_NUM = ?',
+      [title ? title.trim() : null, content ?? null, isPrivate !== undefined ? (isPrivate ? 1 : 0) : null, questionNum]
+    );
+
+    res.json({ message: '문의가 수정되었습니다.' });
+  } catch (error) {
+    console.error('문의 수정 에러:', error);
+    res.status(500).json({ message: '문의 수정에 실패했습니다.' });
   }
 });
 
@@ -447,7 +492,6 @@ router.delete('/question/:questionNum', authMiddleware, async (req, res) => {
     res.status(500).json({ message: '문의 삭제에 실패했습니다.' });
   }
 });
-
 /* ── 8) 답변 작성 ── */
 /* POST /api/notice/question/:questionNum/answer */
 router.post('/question/:questionNum/answer', authMiddleware, async (req, res) => {

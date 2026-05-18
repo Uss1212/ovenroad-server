@@ -58,10 +58,9 @@ router.get('/tags', async (req, res) => {
 
 /* ── 1) 장소 목록 조회 (검색 + 필터) ── */
 /* GET /api/places */
-/* ?keyword=크로와상 &region=마포구 &category=베이커리 &menu=크로와상 */
 router.get('/', async (req, res) => {
   try {
-    const { keyword, region, category, menu } = req.query;
+    const { keyword, region, category, menu, sort, limit } = req.query;
 
     let query = `
       SELECT
@@ -105,7 +104,17 @@ router.get('/', async (req, res) => {
       params.push(category);
     }
 
-    query += ' ORDER BY p.PLACE_NUM DESC';
+    if (sort === 'rating') {
+      query += ' AND (SELECT COUNT(*) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) > 0';
+      query += ' ORDER BY avgRating DESC, reviewCount DESC, p.PLACE_NUM DESC';
+    } else {
+      query += ' ORDER BY p.PLACE_NUM DESC';
+    }
+
+    const limitNum = parseInt(limit, 10);
+    if (!Number.isNaN(limitNum) && limitNum > 0 && limitNum <= 100) {
+      query += ` LIMIT ${limitNum}`;
+    }
 
     const [rows] = await pool.query(query, params);
     res.json(rows);
