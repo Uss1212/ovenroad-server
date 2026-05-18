@@ -244,6 +244,7 @@ router.delete('/draft/:draftNum', authMiddleware, async (req, res) => {
 router.get('/:courseNum', async (req, res) => {
   try {
     const { courseNum } = req.params;
+    const userNum = req.query.userNum || null;
 
     /* 코스 기본 정보 */
     const [courses] = await pool.query(`
@@ -278,9 +279,20 @@ router.get('/:courseNum', async (req, res) => {
       ORDER BY cp.PLACE_ORDER ASC
     `, [courseNum]);
 
+    let isLiked = false;
+    let isScrapped = false;
+    if (userNum) {
+      const [likeRows] = await pool.query('SELECT 1 FROM COURSE_LIKE WHERE COURSE_NUM = ? AND USER_NUM = ?', [courseNum, userNum]);
+      const [scrapRows] = await pool.query('SELECT 1 FROM COURSE_SCRAP WHERE COURSE_NUM = ? AND USER_NUM = ?', [courseNum, userNum]);
+      isLiked = likeRows.length > 0;
+      isScrapped = scrapRows.length > 0;
+    }
+
     res.json({
       ...courses[0],
       places: places,
+      isLiked,
+      isScrapped,
     });
   } catch (error) {
     console.error('코스 상세 조회 에러:', error);

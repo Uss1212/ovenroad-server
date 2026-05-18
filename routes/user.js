@@ -155,23 +155,23 @@ router.post('/signup', async (req, res) => {
 
 /* ── 2) 로그인 ── */
 /* POST /api/user/login */
-/* 이메일 주소 = 아이디! 이메일로 로그인 */
+/* 아이디 + 비밀번호 로그인 */
 router.post('/login', async (req, res) => {
   try {
     const { id, password } = req.body;
 
     if (!id || !password) {
-      return res.status(400).json({ message: '이메일과 비밀번호를 입력해주세요.' });
+      return res.status(400).json({ message: '아이디와 비밀번호를 입력해주세요.' });
     }
 
     if (!JWT_SECRET) {
       return res.status(500).json({ message: 'JWT_SECRET이 설정되지 않았습니다.' });
     }
 
-    /* DB에서 사용자 찾기 (이메일 = 아이디) */
-    const [rows] = await pool.query('SELECT * FROM USER WHERE EMAIL = ?', [id]);
+    /* DB에서 사용자 찾기 (아이디로 검색) */
+    const [rows] = await pool.query('SELECT * FROM USER WHERE ID = ?', [id]);
     if (rows.length === 0) {
-      return res.status(401).json({ message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+      return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
 
     const user = rows[0];
@@ -179,7 +179,7 @@ router.post('/login', async (req, res) => {
     /* 비밀번호 비교 */
     const isMatch = await bcrypt.compare(password, user.USER_PW);
     if (!isMatch) {
-      return res.status(401).json({ message: '이메일 또는 비밀번호가 올바르지 않습니다.' });
+      return res.status(401).json({ message: '아이디 또는 비밀번호가 올바르지 않습니다.' });
     }
 
     /* 로그인 성공 → 비밀번호 빼고 응답 */
