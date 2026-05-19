@@ -125,7 +125,55 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* ── 2) 장소 상세 조회 ── */
+/* ── 2) 주변 베이커리 검색 (Google Places Nearby Search) ── */
+/* GET /api/places/nearby-bakeries?lat=&lng=&radius= */
+/* 현재 위치 기준으로 Google Maps에 등록된 베이커리를 최대 60개 가져옴 */
+router.get('/nearby-bakeries', async (req, res) => {
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) return res.json([]);
+
+  const lat    = parseFloat(req.query.lat)    || 37.5622;  /* 기본: 마포구 */
+  const lng    = parseFloat(req.query.lng)    || 126.9086;
+  const radius = parseInt(req.query.radius)   || 5000;     /* 기본 반경 5km */
+
+  try {
+    const results = [];
+    let pageToken = null;
+
+    /* Google Places는 한 번에 최대 20개, 페이지 토큰으로 최대 3페이지(60개)까지 가져옴 */
+    for (let i = 0; i < 3; i++) {
+      const url = pageToken
+        ? `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${pageToken}&key=${GOOGLE_KEY}`
+        : `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=bakery&language=ko&key=${GOOGLE_KEY}`;
+
+      const data = await httpsGet(url);
+      if (data.results) results.push(...data.results);
+
+      pageToken = data.next_page_token || null;
+      if (!pageToken) break;
+      /* 다음 페이지 토큰이 활성화되기까지 2초 대기 (Google API 스펙) */
+      if (i < 2) await new Promise(r => setTimeout(r, 2000));
+    }
+
+    res.json(results.map(p => ({
+      placeId:  p.place_id,
+      name:     p.name,
+      address:  p.vicinity || '',
+      lat:      p.geometry.location.lat,
+      lng:      p.geometry.location.lng,
+      rating:   p.rating || 0,
+      /* 대표 사진: photo_reference를 이용해 Google Places Photo URL 생성 */
+      photoUrl: p.photos && p.photos.length > 0
+        ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_KEY}`
+        : null,
+    })));
+  } catch (err) {
+    console.error('nearby-bakeries 에러:', err);
+    res.json([]);
+  }
+});
+
+/* ── 3) 장소 상세 조회 ── */
 /* GET /api/places/:placeNum */
 router.get('/:placeNum', async (req, res) => {
   try {
