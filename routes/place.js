@@ -6,6 +6,7 @@
    =================================================== */
 
 const express = require('express');
+const https = require('https');
 const pool = require('../db');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
@@ -445,6 +446,85 @@ router.delete('/:placeNum/reviews/:reviewNum', authMiddleware, async (req, res) 
   } catch (error) {
     console.error('리뷰 삭제 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ===================================================
+   Google Places API 연동
+   =================================================== */
+
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+/* GET /api/places/:placeNum/google-details */
+router.get('/:placeNum/google-details', async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+
+    if (!GOOGLE_KEY || GOOGLE_KEY === '여기에_키_입력') {
+      return res.status(503).json({ message: 'Google Places API 키가 설정되지 않았습니다.' });
+    }
+
+    const [places] = await pool.query(
+      'SELECT PLACE_NAME, ADDRESS, GOOGLE_PLACE_ID FROM PLACES WHERE PLACE_NUM = ?',
+      [placeNum]
+    );
+
+    if (places.length === 0) {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    let { PLACE_NAME, ADDRESS, GOOGLE_PLACE_ID } = places[0];
+
+    if (!GOOGLE_PLACE_ID) {
+      const query = encodeURIComponent(`${PLACE_NAME} ${ADDRESS || ''}`);
+      const searchUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${query}&inputtype=textquery&fields=place_id&language=ko&key=${GOOGLE_KEY}`;
+      const searchResult = await httpsGet(searchUrl);
+
+      if (searchResult.candidates && searchResult.candidates.length > 0) {
+        GOOGLE_PLACE_ID = searchResult.candidates[0].place_id;
+        await pool.query(
+          'UPDATE PLACES SET GOOGLE_PLACE_ID = ? WHERE PLACE_NUM = ?',
+          [GOOGLE_PLACE_ID, placeNum]
+        );
+      }
+    }
+
+    if (!GOOGLE_PLACE_ID) {
+      return res.json({ found: false });
+    }
+
+    const fields = 'opening_hours,formatted_phone_number,website,business_status';
+    const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${GOOGLE_PLACE_ID}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const detailResult = await httpsGet(detailUrl);
+
+    if (detailResult.status !== 'OK') {
+      return res.json({ found: false });
+    }
+
+    const r = detailResult.result;
+    res.json({
+      found: true,
+      openingHours: r.opening_hours?.weekday_text || null,
+      isOpenNow: r.opening_hours?.open_now ?? null,
+      phone: r.formatted_phone_number || null,
+      website: r.website || null,
+      businessStatus: r.business_status || null,
+    });
+  } catch (error) {
+    console.error('Google Places 에러:', error);
+    res.status(500).json({ message: '구글 장소 정보를 가져오지 못했습니다.' });
   }
 });
 
