@@ -173,7 +173,53 @@ router.get('/nearby-bakeries', async (req, res) => {
   }
 });
 
-/* ── 3) 장소 상세 조회 ── */
+/* ── 3) 외부 베이커리 상세 조회 (Google Places Details) ── */
+/* GET /api/places/external/:placeId */
+/* DB에 없는 Google Places 베이커리의 상세 정보를 가져옴 */
+router.get('/external/:placeId', async (req, res) => {
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) return res.status(503).json({ message: 'API 키 없음' });
+
+  const { placeId } = req.params;
+
+  try {
+    const fields = 'name,formatted_address,geometry,opening_hours,formatted_phone_number,website,photos,rating,user_ratings_total,business_status';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const data = await httpsGet(url);
+
+    if (data.status !== 'OK') {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    const r = data.result;
+
+    /* 사진 URL 최대 5장 */
+    const photos = (r.photos || []).slice(0, 5).map(p =>
+      `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${GOOGLE_KEY}`
+    );
+
+    res.json({
+      placeId,
+      name:          r.name,
+      address:       r.formatted_address || '',
+      lat:           r.geometry?.location?.lat || null,
+      lng:           r.geometry?.location?.lng || null,
+      phone:         r.formatted_phone_number || null,
+      website:       r.website || null,
+      rating:        r.rating || 0,
+      ratingCount:   r.user_ratings_total || 0,
+      businessStatus: r.business_status || null,
+      openingHours:  r.opening_hours?.weekday_text || null,
+      isOpenNow:     r.opening_hours?.open_now ?? null,
+      photos,
+    });
+  } catch (err) {
+    console.error('external place 에러:', err);
+    res.status(500).json({ message: '장소 정보를 가져오지 못했습니다.' });
+  }
+});
+
+/* ── 4) 장소 상세 조회 ── */
 /* GET /api/places/:placeNum */
 router.get('/:placeNum', async (req, res) => {
   try {
