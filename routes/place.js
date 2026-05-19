@@ -155,25 +155,136 @@ router.get('/nearby-bakeries', async (req, res) => {
       if (i < 2) await new Promise(r => setTimeout(r, 2000));
     }
 
-    res.json(results.map(p => ({
+    const mapped = results.map(p => ({
       placeId:  p.place_id,
       name:     p.name,
       address:  p.vicinity || '',
       lat:      p.geometry.location.lat,
       lng:      p.geometry.location.lng,
       rating:   p.rating || 0,
-      /* 대표 사진: photo_reference를 이용해 Google Places Photo URL 생성 */
       photoUrl: p.photos && p.photos.length > 0
         ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_KEY}`
         : null,
-    })));
+    }));
+
+    /* 응답은 즉시 반환, DB 저장은 백그라운드에서 처리 */
+    res.json(mapped);
+
+    /* ── 백그라운드: 조회된 빵집 전부 DB에 저장 ── */
+    saveNearbyToDb(results, GOOGLE_KEY).catch(e =>
+      console.error('nearby 백그라운드 저장 에러:', e)
+    );
+
   } catch (err) {
     console.error('nearby-bakeries 에러:', err);
     res.json([]);
   }
 });
 
-/* ── 3) 외부 베이커리 상세 조회 (Google Places Details) ── */
+/* 주변 베이커리 DB 저장 헬퍼 함수 */
+async function saveNearbyToDb(places, googleKey) {
+  if (!places || places.length === 0) return;
+
+  /* 1) 이미 DB에 있는 GOOGLE_PLACE_ID 한번에 조회 */
+  const placeIds = places.map(p => p.place_id).filter(Boolean);
+  const [existingRows] = await pool.query(
+    `SELECT GOOGLE_PLACE_ID FROM PLACES WHERE GOOGLE_PLACE_ID IN (${placeIds.map(() => '?').join(',')})`,
+    placeIds
+  );
+  const existingSet = new Set(existingRows.map(r => r.GOOGLE_PLACE_ID));
+
+  /* 2) 새로운 빵집만 저장 (10개씩 병렬 처리) */
+  const newPlaces = places.filter(p => p.place_id && !existingSet.has(p.place_id));
+  const CHUNK = 10;
+  for (let i = 0; i < newPlaces.length; i += CHUNK) {
+    await Promise.all(newPlaces.slice(i, i + CHUNK).map(async p => {
+      try {
+        const [ins] = await pool.query(
+          'INSERT INTO PLACES (PLACE_NAME, ADDRESS, LATITUDE, LONGITUDE, GOOGLE_PLACE_ID) VALUES (?, ?, ?, ?, ?)',
+          [p.name, p.vicinity || '', p.geometry.location.lat, p.geometry.location.lng, p.place_id]
+        );
+        /* 대표 사진도 함께 저장 */
+        if (ins.insertId && p.photos && p.photos.length > 0) {
+          const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${googleKey}`;
+          await pool.query(
+            'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES (?, ?)',
+            [ins.insertId, photoUrl]
+          );
+        }
+      } catch { /* 중복 등 개별 오류 무시 */ }
+    }));
+  }
+}
+
+/* ── 3) 외부 베이커리 DB 저장 ── */
+/* POST /api/places/save-external */
+/* Google Places 빵집을 DB에 저장하고 PLACE_NUM 반환 (이미 있으면 기존 ID 반환) */
+router.post('/save-external', async (req, res) => {
+  const { placeId } = req.body;
+  if (!placeId) return res.status(400).json({ message: 'placeId 필요' });
+
+  try {
+    /* 1) 이미 DB에 있는지 GOOGLE_PLACE_ID로 확인 */
+    const [existing] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE GOOGLE_PLACE_ID = ?',
+      [placeId]
+    );
+    if (existing.length > 0) {
+      return res.json({ placeNum: existing[0].PLACE_NUM });
+    }
+
+    /* 2) Google Places Details API로 상세 정보 가져오기 */
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+    if (!GOOGLE_KEY) return res.status(503).json({ message: 'API 키 없음' });
+
+    const fields = 'name,formatted_address,geometry,photos,rating';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const data = await httpsGet(url);
+
+    if (data.status !== 'OK') {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    const r = data.result;
+    const lat = r.geometry?.location?.lat || null;
+    const lng = r.geometry?.location?.lng || null;
+
+    /* 3) 같은 이름의 빵집이 DB에 있는지 확인 (중복 방지) */
+    const [byName] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE PLACE_NAME = ? LIMIT 1',
+      [r.name]
+    );
+    if (byName.length > 0) {
+      /* 기존 빵집에 GOOGLE_PLACE_ID 연결 */
+      await pool.query('UPDATE PLACES SET GOOGLE_PLACE_ID = ? WHERE PLACE_NUM = ?', [placeId, byName[0].PLACE_NUM]);
+      return res.json({ placeNum: byName[0].PLACE_NUM });
+    }
+
+    /* 4) 새 빵집 DB에 삽입 */
+    const [result] = await pool.query(
+      `INSERT INTO PLACES (PLACE_NAME, ADDRESS, LATITUDE, LONGITUDE, GOOGLE_PLACE_ID)
+       VALUES (?, ?, ?, ?, ?)`,
+      [r.name, r.formatted_address || '', lat, lng, placeId]
+    );
+    const placeNum = result.insertId;
+
+    /* 5) 대표 사진이 있으면 PLACE_IMAGE에도 저장 */
+    if (r.photos && r.photos.length > 0) {
+      const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${r.photos[0].photo_reference}&key=${GOOGLE_KEY}`;
+      await pool.query(
+        'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES (?, ?)',
+        [placeNum, photoUrl]
+      );
+    }
+
+    res.json({ placeNum });
+  } catch (err) {
+    console.error('save-external 에러:', err);
+    res.status(500).json({ message: '저장 실패' });
+  }
+});
+
+/* ── 4) 외부 베이커리 상세 조회 (Google Places Details) ── */
 /* GET /api/places/external/:placeId */
 /* DB에 없는 Google Places 베이커리의 상세 정보를 가져옴 */
 router.get('/external/:placeId', async (req, res) => {
