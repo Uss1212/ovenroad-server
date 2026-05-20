@@ -340,7 +340,8 @@ router.get('/naver/login', (req, res) => {
     + `?response_type=code`
     + `&client_id=${NAVER_CLIENT_ID}`
     + `&redirect_uri=${encodeURIComponent(NAVER_REDIRECT_URI)}`
-    + `&state=${state}`;
+    + `&state=${state}`
+    + `&auth_type=reprompt`;
 
   /* 네이버 로그인 페이지로 이동시킴 */
   res.redirect(naverAuthUrl);
@@ -463,7 +464,8 @@ router.get('/kakao/login', (req, res) => {
   const kakaoAuthUrl = `https://kauth.kakao.com/oauth/authorize`
     + `?response_type=code`
     + `&client_id=${KAKAO_CLIENT_ID}`
-    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`;
+    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`
+    + `&prompt=login`;
 
   /* 카카오 로그인 페이지로 이동시킴 */
   res.redirect(kakaoAuthUrl);
