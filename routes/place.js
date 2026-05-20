@@ -6,6 +6,7 @@
    =================================================== */
 
 const express = require('express');
+const https = require('https');
 const pool = require('../db');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
@@ -125,7 +126,212 @@ router.get('/', async (req, res) => {
   }
 });
 
-/* ── 2) 장소 상세 조회 ── */
+/* ── 2) 주변 베이커리 검색 (Google Places Nearby Search) ── */
+/* GET /api/places/nearby-bakeries?lat=&lng=&radius= */
+/* 현재 위치 기준으로 Google Maps에 등록된 베이커리를 최대 60개 가져옴 */
+router.get('/nearby-bakeries', async (req, res) => {
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) return res.json([]);
+
+  const lat    = parseFloat(req.query.lat)    || 37.5622;  /* 기본: 마포구 */
+  const lng    = parseFloat(req.query.lng)    || 126.9086;
+  const radius = parseInt(req.query.radius)   || 5000;     /* 기본 반경 5km */
+
+  try {
+    const results = [];
+    let pageToken = null;
+
+    /* Google Places는 한 번에 최대 20개, 페이지 토큰으로 최대 3페이지(60개)까지 가져옴 */
+    for (let i = 0; i < 3; i++) {
+      const url = pageToken
+        ? `https://maps.googleapis.com/maps/api/place/nearbysearch/json?pagetoken=${pageToken}&key=${GOOGLE_KEY}`
+        : `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&type=bakery&language=ko&key=${GOOGLE_KEY}`;
+
+      const data = await httpsGet(url);
+      if (data.results) results.push(...data.results);
+
+      pageToken = data.next_page_token || null;
+      if (!pageToken) break;
+      /* 다음 페이지 토큰이 활성화되기까지 2초 대기 (Google API 스펙) */
+      if (i < 2) await new Promise(r => setTimeout(r, 2000));
+    }
+
+    const mapped = results.map(p => ({
+      placeId:  p.place_id,
+      name:     p.name,
+      address:  p.vicinity || '',
+      lat:      p.geometry.location.lat,
+      lng:      p.geometry.location.lng,
+      rating:   p.rating || 0,
+      photoUrl: p.photos && p.photos.length > 0
+        ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${GOOGLE_KEY}`
+        : null,
+    }));
+
+    /* 응답은 즉시 반환, DB 저장은 백그라운드에서 처리 */
+    res.json(mapped);
+
+    /* ── 백그라운드: 조회된 빵집 전부 DB에 저장 ── */
+    saveNearbyToDb(results, GOOGLE_KEY).catch(e =>
+      console.error('nearby 백그라운드 저장 에러:', e)
+    );
+
+  } catch (err) {
+    console.error('nearby-bakeries 에러:', err);
+    res.json([]);
+  }
+});
+
+/* 주변 베이커리 DB 저장 헬퍼 함수 */
+async function saveNearbyToDb(places, googleKey) {
+  if (!places || places.length === 0) return;
+
+  /* 1) 이미 DB에 있는 GOOGLE_PLACE_ID 한번에 조회 */
+  const placeIds = places.map(p => p.place_id).filter(Boolean);
+  const [existingRows] = await pool.query(
+    `SELECT GOOGLE_PLACE_ID FROM PLACES WHERE GOOGLE_PLACE_ID IN (${placeIds.map(() => '?').join(',')})`,
+    placeIds
+  );
+  const existingSet = new Set(existingRows.map(r => r.GOOGLE_PLACE_ID));
+
+  /* 2) 새로운 빵집만 저장 (10개씩 병렬 처리) */
+  const newPlaces = places.filter(p => p.place_id && !existingSet.has(p.place_id));
+  const CHUNK = 10;
+  for (let i = 0; i < newPlaces.length; i += CHUNK) {
+    await Promise.all(newPlaces.slice(i, i + CHUNK).map(async p => {
+      try {
+        const [ins] = await pool.query(
+          'INSERT INTO PLACES (PLACE_NAME, ADDRESS, LATITUDE, LONGITUDE, GOOGLE_PLACE_ID) VALUES (?, ?, ?, ?, ?)',
+          [p.name, p.vicinity || '', p.geometry.location.lat, p.geometry.location.lng, p.place_id]
+        );
+        /* 대표 사진도 함께 저장 */
+        if (ins.insertId && p.photos && p.photos.length > 0) {
+          const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=400&photoreference=${p.photos[0].photo_reference}&key=${googleKey}`;
+          await pool.query(
+            'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES (?, ?)',
+            [ins.insertId, photoUrl]
+          );
+        }
+      } catch { /* 중복 등 개별 오류 무시 */ }
+    }));
+  }
+}
+
+/* ── 3) 외부 베이커리 DB 저장 ── */
+/* POST /api/places/save-external */
+/* Google Places 빵집을 DB에 저장하고 PLACE_NUM 반환 (이미 있으면 기존 ID 반환) */
+router.post('/save-external', async (req, res) => {
+  const { placeId } = req.body;
+  if (!placeId) return res.status(400).json({ message: 'placeId 필요' });
+
+  try {
+    /* 1) 이미 DB에 있는지 GOOGLE_PLACE_ID로 확인 */
+    const [existing] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE GOOGLE_PLACE_ID = ?',
+      [placeId]
+    );
+    if (existing.length > 0) {
+      return res.json({ placeNum: existing[0].PLACE_NUM });
+    }
+
+    /* 2) Google Places Details API로 상세 정보 가져오기 */
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+    if (!GOOGLE_KEY) return res.status(503).json({ message: 'API 키 없음' });
+
+    const fields = 'name,formatted_address,geometry,photos,rating';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const data = await httpsGet(url);
+
+    if (data.status !== 'OK') {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    const r = data.result;
+    const lat = r.geometry?.location?.lat || null;
+    const lng = r.geometry?.location?.lng || null;
+
+    /* 3) 같은 이름의 빵집이 DB에 있는지 확인 (중복 방지) */
+    const [byName] = await pool.query(
+      'SELECT PLACE_NUM FROM PLACES WHERE PLACE_NAME = ? LIMIT 1',
+      [r.name]
+    );
+    if (byName.length > 0) {
+      /* 기존 빵집에 GOOGLE_PLACE_ID 연결 */
+      await pool.query('UPDATE PLACES SET GOOGLE_PLACE_ID = ? WHERE PLACE_NUM = ?', [placeId, byName[0].PLACE_NUM]);
+      return res.json({ placeNum: byName[0].PLACE_NUM });
+    }
+
+    /* 4) 새 빵집 DB에 삽입 */
+    const [result] = await pool.query(
+      `INSERT INTO PLACES (PLACE_NAME, ADDRESS, LATITUDE, LONGITUDE, GOOGLE_PLACE_ID)
+       VALUES (?, ?, ?, ?, ?)`,
+      [r.name, r.formatted_address || '', lat, lng, placeId]
+    );
+    const placeNum = result.insertId;
+
+    /* 5) 대표 사진이 있으면 PLACE_IMAGE에도 저장 */
+    if (r.photos && r.photos.length > 0) {
+      const photoUrl = `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${r.photos[0].photo_reference}&key=${GOOGLE_KEY}`;
+      await pool.query(
+        'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES (?, ?)',
+        [placeNum, photoUrl]
+      );
+    }
+
+    res.json({ placeNum });
+  } catch (err) {
+    console.error('save-external 에러:', err);
+    res.status(500).json({ message: '저장 실패' });
+  }
+});
+
+/* ── 4) 외부 베이커리 상세 조회 (Google Places Details) ── */
+/* GET /api/places/external/:placeId */
+/* DB에 없는 Google Places 베이커리의 상세 정보를 가져옴 */
+router.get('/external/:placeId', async (req, res) => {
+  const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) return res.status(503).json({ message: 'API 키 없음' });
+
+  const { placeId } = req.params;
+
+  try {
+    const fields = 'name,formatted_address,geometry,opening_hours,formatted_phone_number,website,photos,rating,user_ratings_total,business_status';
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${placeId}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const data = await httpsGet(url);
+
+    if (data.status !== 'OK') {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    const r = data.result;
+
+    /* 사진 URL 최대 5장 */
+    const photos = (r.photos || []).slice(0, 5).map(p =>
+      `https://maps.googleapis.com/maps/api/place/photo?maxwidth=800&photoreference=${p.photo_reference}&key=${GOOGLE_KEY}`
+    );
+
+    res.json({
+      placeId,
+      name:          r.name,
+      address:       r.formatted_address || '',
+      lat:           r.geometry?.location?.lat || null,
+      lng:           r.geometry?.location?.lng || null,
+      phone:         r.formatted_phone_number || null,
+      website:       r.website || null,
+      rating:        r.rating || 0,
+      ratingCount:   r.user_ratings_total || 0,
+      businessStatus: r.business_status || null,
+      openingHours:  r.opening_hours?.weekday_text || null,
+      isOpenNow:     r.opening_hours?.open_now ?? null,
+      photos,
+    });
+  } catch (err) {
+    console.error('external place 에러:', err);
+    res.status(500).json({ message: '장소 정보를 가져오지 못했습니다.' });
+  }
+});
+
+/* ── 4) 장소 상세 조회 ── */
 /* GET /api/places/:placeNum */
 router.get('/:placeNum', async (req, res) => {
   try {
@@ -446,6 +652,85 @@ router.delete('/:placeNum/reviews/:reviewNum', authMiddleware, async (req, res) 
   } catch (error) {
     console.error('리뷰 삭제 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ===================================================
+   Google Places API 연동
+   =================================================== */
+
+function httpsGet(url) {
+  return new Promise((resolve, reject) => {
+    https.get(url, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { reject(e); }
+      });
+    }).on('error', reject);
+  });
+}
+
+/* GET /api/places/:placeNum/google-details */
+router.get('/:placeNum/google-details', async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+
+    if (!GOOGLE_KEY || GOOGLE_KEY === '여기에_키_입력') {
+      return res.status(503).json({ message: 'Google Places API 키가 설정되지 않았습니다.' });
+    }
+
+    const [places] = await pool.query(
+      'SELECT PLACE_NAME, ADDRESS, GOOGLE_PLACE_ID FROM PLACES WHERE PLACE_NUM = ?',
+      [placeNum]
+    );
+
+    if (places.length === 0) {
+      return res.status(404).json({ message: '장소를 찾을 수 없습니다.' });
+    }
+
+    let { PLACE_NAME, ADDRESS, GOOGLE_PLACE_ID } = places[0];
+
+    if (!GOOGLE_PLACE_ID) {
+      const query = encodeURIComponent(`${PLACE_NAME} ${ADDRESS || ''}`);
+      const searchUrl = `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${query}&inputtype=textquery&fields=place_id&language=ko&key=${GOOGLE_KEY}`;
+      const searchResult = await httpsGet(searchUrl);
+
+      if (searchResult.candidates && searchResult.candidates.length > 0) {
+        GOOGLE_PLACE_ID = searchResult.candidates[0].place_id;
+        await pool.query(
+          'UPDATE PLACES SET GOOGLE_PLACE_ID = ? WHERE PLACE_NUM = ?',
+          [GOOGLE_PLACE_ID, placeNum]
+        );
+      }
+    }
+
+    if (!GOOGLE_PLACE_ID) {
+      return res.json({ found: false });
+    }
+
+    const fields = 'opening_hours,formatted_phone_number,website,business_status';
+    const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${GOOGLE_PLACE_ID}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
+    const detailResult = await httpsGet(detailUrl);
+
+    if (detailResult.status !== 'OK') {
+      return res.json({ found: false });
+    }
+
+    const r = detailResult.result;
+    res.json({
+      found: true,
+      openingHours: r.opening_hours?.weekday_text || null,
+      isOpenNow: r.opening_hours?.open_now ?? null,
+      phone: r.formatted_phone_number || null,
+      website: r.website || null,
+      businessStatus: r.business_status || null,
+    });
+  } catch (error) {
+    console.error('Google Places 에러:', error);
+    res.status(500).json({ message: '구글 장소 정보를 가져오지 못했습니다.' });
   }
 });
 
