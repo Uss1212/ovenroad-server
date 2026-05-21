@@ -595,6 +595,28 @@ router.get('/admin/list', authMiddleware, async (req, res) => {
   }
 });
 
+/* ── 관리자) 회원 등급 변경 ── */
+/* PATCH /api/user/:userNum/grade */
+router.patch('/:userNum/grade', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.grade !== 1 && req.user.grade !== 'admin') {
+      return res.status(403).json({ message: '관리자만 접근할 수 있습니다.' });
+    }
+    if (Number(req.user.userNum) === Number(req.params.userNum)) {
+      return res.status(400).json({ message: '본인의 등급은 변경할 수 없습니다.' });
+    }
+    const { grade } = req.body;
+    if (grade !== 0 && grade !== 1) {
+      return res.status(400).json({ message: '유효하지 않은 등급입니다.' });
+    }
+    await pool.query('UPDATE USER SET GRADE = ? WHERE USER_NUM = ?', [grade, req.params.userNum]);
+    res.json({ message: '등급이 변경되었습니다.' });
+  } catch (error) {
+    console.error('등급 변경 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 14-1) 아이디 찾기 ── */
 /* POST /api/user/find-id */
 /* 이메일로 가입된 아이디(ID)를 찾아서 돌려줌 */
