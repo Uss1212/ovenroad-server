@@ -578,6 +578,23 @@ router.get('/kakao/callback', async (req, res) => {
   }
 });
 
+/* ── 관리자) 전체 회원 목록 ── */
+/* GET /api/user/admin/list */
+router.get('/admin/list', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.grade !== 1 && req.user.grade !== 'admin') {
+      return res.status(403).json({ message: '관리자만 접근할 수 있습니다.' });
+    }
+    const [rows] = await pool.query(
+      'SELECT USER_NUM, ID, NICKNAME, EMAIL, GRADE, SOCIAL_TYPE FROM USER ORDER BY USER_NUM ASC'
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('회원 목록 조회 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 14-1) 아이디 찾기 ── */
 /* POST /api/user/find-id */
 /* 이메일로 가입된 아이디(ID)를 찾아서 돌려줌 */
@@ -797,10 +814,16 @@ router.put('/:userNum/password', authMiddleware, requireSameUser, async (req, re
 /* DELETE /api/user/:userNum */
 /* 일반 회원: 비밀번호 확인 후 삭제 */
 /* 소셜 로그인 회원(네이버/카카오): 비밀번호 없이 바로 삭제 */
-router.delete('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
+router.delete('/:userNum', authMiddleware, async (req, res) => {
   try {
     const { userNum } = req.params;
     const { password } = req.body;
+    const isAdmin = req.user.grade === 1 || req.user.grade === 'admin';
+    const isSelf = Number(req.user.userNum) === Number(userNum);
+
+    if (!isAdmin && !isSelf) {
+      return res.status(403).json({ message: '본인만 접근할 수 있습니다.' });
+    }
 
     /* DB에서 사용자 찾기 */
     const [rows] = await pool.query('SELECT USER_PW, SOCIAL_TYPE, SOCIAL_TOKEN FROM USER WHERE USER_NUM = ?', [userNum]);
@@ -810,8 +833,8 @@ router.delete('/:userNum', authMiddleware, requireSameUser, async (req, res) => 
 
     const userInfo = rows[0];
 
-    /* 소셜 로그인 사용자가 아닌 경우 → 비밀번호 확인 필요 */
-    if (!userInfo.SOCIAL_TYPE) {
+    /* 본인 탈퇴이고 소셜 로그인이 아닌 경우 → 비밀번호 확인 필요 */
+    if (isSelf && !userInfo.SOCIAL_TYPE) {
       if (!password) {
         return res.status(400).json({ message: '비밀번호를 입력해주세요.' });
       }
