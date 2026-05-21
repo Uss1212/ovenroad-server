@@ -711,7 +711,7 @@ router.get('/:placeNum/google-details', async (req, res) => {
       return res.json({ found: false });
     }
 
-    const fields = 'opening_hours,formatted_phone_number,website,business_status';
+    const fields = 'opening_hours,formatted_phone_number,website,business_status,photos';
     const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${GOOGLE_PLACE_ID}&fields=${fields}&language=ko&key=${GOOGLE_KEY}`;
     const detailResult = await httpsGet(detailUrl);
 
@@ -720,8 +720,13 @@ router.get('/:placeNum/google-details', async (req, res) => {
     }
 
     const r = detailResult.result;
+    const photoUrl = r.photos && r.photos.length > 0
+      ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=600&photoreference=${r.photos[0].photo_reference}&key=${GOOGLE_KEY}`
+      : null;
+
     res.json({
       found: true,
+      photoUrl,
       openingHours: r.opening_hours?.weekday_text || null,
       isOpenNow: r.opening_hours?.open_now ?? null,
       phone: r.formatted_phone_number || null,

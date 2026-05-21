@@ -50,6 +50,7 @@ router.get('/', async (req, res) => {
         c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CONTENT, c.CREATED_TIME, c.COVER_IMAGE,
         u.NICKNAME AS author,
         u.USER_NUM AS authorNum,
+        u.PROFILE_IMAGE AS authorImage,
         (SELECT COUNT(*) FROM COURSE_LIKE cl WHERE cl.COURSE_NUM = c.COURSE_NUM) AS likeCount,
         (SELECT COUNT(*) FROM COURSE_SCRAP cs WHERE cs.COURSE_NUM = c.COURSE_NUM) AS scrapCount,
         (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
