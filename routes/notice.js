@@ -324,7 +324,8 @@ router.delete('/faq/:faqNum', authMiddleware, async (req, res) => {
 /* GET /api/notice/question/list */
 router.get('/question/list', authMiddleware, async (req, res) => {
   try {
-    const userNum = req.query.userNum || req.user.userNum;
+    const requestUserNum = req.query.userNum;
+    const admin = isAdmin(req.user);
 
     let query = `
       SELECT q.*, u.NICKNAME AS author,
@@ -334,10 +335,16 @@ router.get('/question/list', authMiddleware, async (req, res) => {
     `;
     const params = [];
 
-    /* 특정 사용자의 문의만 조회 */
-    if (userNum) {
+    if (admin) {
+      /* 관리자: userNum 파라미터가 있으면 해당 사용자만, 없으면 전체 조회 */
+      if (requestUserNum) {
+        query += ' WHERE q.USER_NUM = ?';
+        params.push(requestUserNum);
+      }
+    } else {
+      /* 일반 사용자: 본인 문의만 조회 */
       query += ' WHERE q.USER_NUM = ?';
-      params.push(userNum);
+      params.push(req.user.userNum);
     }
 
     query += ' ORDER BY q.CREATED_TIME DESC';
