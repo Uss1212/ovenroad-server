@@ -7,9 +7,12 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-/* Brevo(구 Sendinblue) HTTP API로 이메일 보내는 도구 */
+const multer = require('multer');
+const { uploadToFirebase } = require('../firebase');
 const pool = require('../db');
 const jwt = require('jsonwebtoken');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 /* ===================================================
    네이버 로그인 OAuth 설정
@@ -229,7 +232,25 @@ router.get('/check-nickname', async (req, res) => {
   }
 });
 
-/* ── 5) 이메일 인증코드 전송 (Gmail SMTP) ── */
+/* ── 5) 이메일 중복확인 ── */
+/* GET /api/user/check-email?email=xxx */
+router.get('/check-email', async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) return res.status(400).json({ message: '이메일을 입력해주세요.' });
+
+    const [rows] = await pool.query('SELECT USER_NUM FROM USER WHERE EMAIL = ?', [email]);
+    if (rows.length > 0) {
+      return res.status(409).json({ message: '이미 사용 중인 이메일입니다.', available: false });
+    }
+    res.json({ available: true });
+  } catch (error) {
+    console.error('이메일 중복확인 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 6) 이메일 인증코드 전송 ── */
 /* POST /api/user/send-email */
 /* 사용자가 입력한 이메일 주소로 6자리 인증코드를 실제로 보냄 */
 router.post('/send-email', async (req, res) => {
@@ -319,7 +340,8 @@ router.get('/naver/login', (req, res) => {
     + `?response_type=code`
     + `&client_id=${NAVER_CLIENT_ID}`
     + `&redirect_uri=${encodeURIComponent(NAVER_REDIRECT_URI)}`
-    + `&state=${state}`;
+    + `&state=${state}`
+    + `&auth_type=reprompt`;
 
   /* 네이버 로그인 페이지로 이동시킴 */
   res.redirect(naverAuthUrl);
@@ -442,7 +464,8 @@ router.get('/kakao/login', (req, res) => {
   const kakaoAuthUrl = `https://kauth.kakao.com/oauth/authorize`
     + `?response_type=code`
     + `&client_id=${KAKAO_CLIENT_ID}`
-    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`;
+    + `&redirect_uri=${encodeURIComponent(KAKAO_REDIRECT_URI)}`
+    + `&prompt=login`;
 
   /* 카카오 로그인 페이지로 이동시킴 */
   res.redirect(kakaoAuthUrl);
@@ -683,6 +706,36 @@ router.get('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
   }
 });
 
+/* ── 7-1) 프로필 이미지 업로드 ── */
+/* POST /api/user/:userNum/profile-image */
+router.post('/:userNum/profile-image', authMiddleware, requireSameUser, upload.single('image'), async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    if (!req.file) return res.status(400).json({ message: '이미지 파일이 없습니다.' });
+    const ext = require('path').extname(req.file.originalname);
+    const fileName = `profiles/profile_${userNum}_${Date.now()}${ext}`;
+    const imageUrl = await uploadToFirebase(req.file.buffer, fileName, req.file.mimetype);
+    await pool.query('UPDATE USER SET PROFILE_IMAGE = ? WHERE USER_NUM = ?', [imageUrl, userNum]);
+    res.json({ message: '프로필 이미지가 업로드되었습니다.', imageUrl });
+  } catch (error) {
+    console.error('프로필 이미지 업로드 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 7-2) 프로필 이미지 삭제 ── */
+/* DELETE /api/user/:userNum/profile-image */
+router.delete('/:userNum/profile-image', authMiddleware, requireSameUser, async (req, res) => {
+  try {
+    const { userNum } = req.params;
+    await pool.query('UPDATE USER SET PROFILE_IMAGE = NULL WHERE USER_NUM = ?', [userNum]);
+    res.json({ message: '프로필 이미지가 삭제되었습니다.' });
+  } catch (error) {
+    console.error('프로필 이미지 삭제 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 /* ── 8) 회원정보 수정 ── */
 /* PUT /api/user/:userNum */
 router.put('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
@@ -698,6 +751,9 @@ router.put('/:userNum', authMiddleware, requireSameUser, async (req, res) => {
     res.json({ message: '회원정보가 수정되었습니다.' });
   } catch (error) {
     console.error('회원정보 수정 에러:', error);
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ message: '이미 사용 중인 이메일입니다.' });
+    }
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });
@@ -811,9 +867,13 @@ router.get('/:userNum/my-courses', authMiddleware, requireSameUser, async (req, 
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         (SELECT COUNT(*) FROM COURSE_LIKE cl WHERE cl.COURSE_NUM = c.COURSE_NUM) AS likeCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSES c
       WHERE c.USER_NUM = ?
       ORDER BY c.CREATED_TIME DESC
@@ -859,10 +919,14 @@ router.get('/:userNum/liked-courses', authMiddleware, requireSameUser, async (re
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         u.NICKNAME AS author,
         (SELECT COUNT(*) FROM COURSE_LIKE cl2 WHERE cl2.COURSE_NUM = c.COURSE_NUM) AS likeCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSE_LIKE cl
       JOIN COURSES c ON c.COURSE_NUM = cl.COURSE_NUM
       JOIN USER u ON u.USER_NUM = c.USER_NUM
@@ -886,10 +950,14 @@ router.get('/:userNum/scraped-courses', authMiddleware, requireSameUser, async (
 
     const [rows] = await pool.query(`
       SELECT
-        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME,
+        c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.CREATED_TIME, c.COVER_IMAGE,
         u.NICKNAME AS author,
         (SELECT COUNT(*) FROM COURSE_SCRAP cs2 WHERE cs2.COURSE_NUM = c.COURSE_NUM) AS scrapCount,
-        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount
+        (SELECT COUNT(*) FROM COURSE_PLACE cp WHERE cp.COURSE_NUM = c.COURSE_NUM) AS placeCount,
+        (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
+         JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
+         WHERE cp.COURSE_NUM = c.COURSE_NUM AND cp.IS_THUMBNAIL = 1
+         LIMIT 1) AS thumbnailImage
       FROM COURSE_SCRAP cs
       JOIN COURSES c ON c.COURSE_NUM = cs.COURSE_NUM
       JOIN USER u ON u.USER_NUM = c.USER_NUM
@@ -904,25 +972,31 @@ router.get('/:userNum/scraped-courses', authMiddleware, requireSameUser, async (
   }
 });
 
-/* ── 19) 내가 작성한 질문(게시글) 목록 ── */
+/* ── 19) 내가 작성한 질문(문의) 목록 ── */
 /* GET /api/user/:userNum/my-posts */
-/* 마이페이지에서 내가 쓴 커뮤니티 글을 보여줄 때 사용 */
+/* 마이페이지에서 내가 쓴 QNA(문의) 목록을 보여줄 때 사용 */
 router.get('/:userNum/my-posts', authMiddleware, requireSameUser, async (req, res) => {
   try {
     const { userNum } = req.params;
 
     const [rows] = await pool.query(`
       SELECT
-        b.BOARD_NUM, b.CATEGORY, b.TITLE, b.CONTENT, b.VIEWS, b.CREATED_TIME,
-        (SELECT COUNT(*) FROM BOARD_COMMENT bc WHERE bc.BOARD_NUM = b.BOARD_NUM) AS commentCount
-      FROM BOARD b
-      WHERE b.USER_NUM = ?
-      ORDER BY b.CREATED_TIME DESC
+        q.QUESTION_NUM AS BOARD_NUM,
+        q.QUESTION_NUM,
+        q.TITLE,
+        q.CONTENT,
+        q.STATUS,
+        q.CREATED_TIME,
+        (SELECT COUNT(*) FROM ANSWER a WHERE a.QUESTION_NUM = q.QUESTION_NUM) AS commentCount,
+        (SELECT COUNT(*) FROM ANSWER a WHERE a.QUESTION_NUM = q.QUESTION_NUM) AS answerCount
+      FROM QUESTION q
+      WHERE q.USER_NUM = ?
+      ORDER BY q.CREATED_TIME DESC
     `, [userNum]);
 
     res.json(rows);
   } catch (error) {
-    console.error('내 게시글 조회 에러:', error);
+    console.error('내 문의 조회 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
   }
 });
