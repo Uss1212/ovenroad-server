@@ -69,6 +69,7 @@ router.get('/', async (req, res) => {
         (SELECT AVG(pr.RATING) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) AS avgRating,
         (SELECT COUNT(*) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) AS reviewCount,
         (SELECT pi.IMAGE_URL FROM PLACE_IMAGE pi WHERE pi.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS thumbnailImage,
+        p.GOOGLE_PLACE_ID,
         (SELECT pc.CATEGORY_NAME FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS categoryName,
         (SELECT pc.RIBBON_COUNT FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS ribbonCount,
         (SELECT pc.CERTIFICATION FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS certification,
@@ -723,6 +724,18 @@ router.get('/:placeNum/google-details', async (req, res) => {
     const photoUrl = r.photos && r.photos.length > 0
       ? `https://maps.googleapis.com/maps/api/place/photo?maxwidth=600&photoreference=${r.photos[0].photo_reference}&key=${GOOGLE_KEY}`
       : null;
+
+    /* 사진이 있고 DB에 아직 없으면 저장 (다음 조회부터 DB에서 바로 반환) */
+    if (photoUrl) {
+      const [existingImg] = await pool.query(
+        'SELECT PLACE_NUM FROM PLACE_IMAGE WHERE PLACE_NUM = ? LIMIT 1', [placeNum]
+      );
+      if (existingImg.length === 0) {
+        await pool.query(
+          'INSERT INTO PLACE_IMAGE (PLACE_NUM, IMAGE_URL) VALUES (?, ?)', [placeNum, photoUrl]
+        );
+      }
+    }
 
     res.json({
       found: true,
