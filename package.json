@@ -18,7 +18,10 @@
     "firebase-admin": "^13.7.0",
     "multer": "^2.1.1",
     "mysql2": "^3.20.0",
+    "node-cron": "^4.2.1",
     "nodemailer": "^8.0.2",
+    "openai": "^6.39.0",
+    "openapi": "^1.0.0",
     "resend": "^6.9.4"
   }
 }

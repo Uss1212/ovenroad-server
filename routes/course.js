@@ -42,7 +42,7 @@ function authMiddleware(req, res, next) {
 /* 필터: ?region=마포구 (지역별 필터) */
 router.get('/', async (req, res) => {
   try {
-    const { sort = 'latest', region } = req.query;
+    const { sort = 'latest', region, userNum } = req.query;
 
     /* 기본 쿼리: 코스 목록 + 작성자 닉네임 + 좋아요/스크랩 수 */
     let query = `
@@ -61,18 +61,28 @@ router.get('/', async (req, res) => {
       JOIN USER u ON u.USER_NUM = c.USER_NUM
     `;
 
+    const conditions = [];
     const params = [];
 
-    /* 지역 필터가 있으면 해당 지역의 장소를 포함한 코스만 */
+    /* 특정 작성자 필터가 없으면 AI 코스 제외 */
+    if (!userNum) conditions.push('c.IS_AI = 0');
+
     if (region) {
-      query += `
-        WHERE c.COURSE_NUM IN (
-          SELECT cp.COURSE_NUM FROM COURSE_PLACE cp
-          JOIN PLACES p ON p.PLACE_NUM = cp.PLACE_NUM
-          WHERE p.ADDRESS LIKE ?
-        )
-      `;
+      conditions.push(`c.COURSE_NUM IN (
+        SELECT cp.COURSE_NUM FROM COURSE_PLACE cp
+        JOIN PLACES p ON p.PLACE_NUM = cp.PLACE_NUM
+        WHERE p.ADDRESS LIKE ?
+      )`);
       params.push(`%${region}%`);
+    }
+
+    if (userNum) {
+      conditions.push('c.USER_NUM = ?');
+      params.push(userNum);
+    }
+
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
     }
 
     /* 정렬 */

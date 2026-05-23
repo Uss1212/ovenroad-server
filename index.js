@@ -9,6 +9,8 @@ const courseRouter = require('./routes/course');
 const placeRouter = require('./routes/place');
 const noticeRouter = require('./routes/notice');
 const uploadRouter = require('./routes/upload');
+const { router: aiCourseRouter, generateAICourses } = require('./routes/aiCourse');
+const cron = require('node-cron');
 
 const pool = require('./db');
 
@@ -22,6 +24,7 @@ async function runMigrations() {
   const questionMigrations = [
     { table: 'QUESTION', col: 'IS_PRIVATE', type: 'TINYINT(1) NOT NULL DEFAULT 0' },
     { table: 'PLACES', col: 'GOOGLE_PLACE_ID', type: 'VARCHAR(255) DEFAULT NULL' },
+    { table: 'COURSES', col: 'IS_AI', type: 'TINYINT(1) NOT NULL DEFAULT 0' },
   ];
   for (const m of questionMigrations) {
     const [rows] = await pool.query(
@@ -46,6 +49,17 @@ async function runMigrations() {
 }
 runMigrations().catch(err => console.error('마이그레이션 에러:', err.message));
 
+/* 매일 오전 9시(KST = UTC+9, 서버 UTC 기준 00:00)에 AI 코스 3개 자동 생성 */
+cron.schedule('0 0 * * *', async () => {
+  console.log('[크론] AI 추천 코스 자동 생성 시작');
+  try {
+    const saved = await generateAICourses(3);
+    console.log(`[크론] AI 추천 코스 ${saved.length}개 생성 완료`);
+  } catch (err) {
+    console.error('[크론] AI 코스 생성 실패:', err.message);
+  }
+}, { timezone: 'Asia/Seoul' });
+
 
 app.use(cors({
   origin: function(origin, callback) {
@@ -65,6 +79,7 @@ app.use('/api/courses', courseRouter);
 app.use('/api/places', placeRouter);
 app.use('/api/notice', noticeRouter);
 app.use('/api/upload', uploadRouter);
+app.use('/api/ai-course', aiCourseRouter);
 
 app.get('/', (req, res) => {
   res.json({ message: '오븐로드 백엔드 서버가 실행 중입니다!' });
