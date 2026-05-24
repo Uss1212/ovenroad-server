@@ -25,6 +25,7 @@ async function runMigrations() {
     { table: 'QUESTION', col: 'IS_PRIVATE', type: 'TINYINT(1) NOT NULL DEFAULT 0' },
     { table: 'PLACES', col: 'GOOGLE_PLACE_ID', type: 'VARCHAR(255) DEFAULT NULL' },
     { table: 'COURSES', col: 'IS_AI', type: 'TINYINT(1) NOT NULL DEFAULT 0' },
+    { table: 'COURSES', col: 'VIEW_COUNT', type: 'INT NOT NULL DEFAULT 0' },
   ];
   for (const m of questionMigrations) {
     const [rows] = await pool.query(
