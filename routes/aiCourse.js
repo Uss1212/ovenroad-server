@@ -119,12 +119,15 @@ router.get('/', async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT c.*,
+        u.NICKNAME AS author,
+        u.PROFILE_IMAGE AS authorImage,
         (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp
          JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp.PLACE_NUM
          WHERE cp.COURSE_NUM = c.COURSE_NUM
          ORDER BY cp.PLACE_ORDER ASC
          LIMIT 1) AS thumbnailImage
       FROM COURSES c
+      JOIN USER u ON u.USER_NUM = c.USER_NUM
       WHERE c.IS_AI = 1
       ORDER BY c.CREATED_TIME DESC
       LIMIT 6
