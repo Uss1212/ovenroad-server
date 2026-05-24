@@ -87,7 +87,7 @@ router.get('/', async (req, res) => {
 
     /* 정렬 */
     if (sort === 'popular') {
-      query += ' ORDER BY likeCount DESC, c.CREATED_TIME DESC';
+      query += ' ORDER BY c.VIEW_COUNT DESC, c.CREATED_TIME DESC';
     } else if (sort === 'scrap') {
       query += ' ORDER BY scrapCount DESC, c.CREATED_TIME DESC';
     } else {
@@ -256,6 +256,9 @@ router.get('/:courseNum', async (req, res) => {
   try {
     const { courseNum } = req.params;
     const userNum = req.query.userNum || null;
+
+    /* 조회수 증가 */
+    await pool.query('UPDATE COURSES SET VIEW_COUNT = VIEW_COUNT + 1 WHERE COURSE_NUM = ?', [courseNum]);
 
     /* 코스 기본 정보 */
     const [courses] = await pool.query(`
