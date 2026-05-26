@@ -73,9 +73,7 @@ async function generateAICourses(count = 3) {
   const jsonMatch = raw.match(/\[[\s\S]*\]/);
   const courses = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
 
-  /* 기존 AI 코스 삭제 후 COURSES 테이블에 새로 저장 */
   const AI_USER_NUM = 20;
-  await pool.query('DELETE FROM COURSES WHERE IS_AI = 1');
 
   for (const course of courses) {
     const [result] = await pool.query(
@@ -109,7 +107,7 @@ async function generateAICourses(count = 3) {
   }
 
   const [saved] = await pool.query(
-    'SELECT * FROM COURSES WHERE IS_AI = 1 ORDER BY CREATED_TIME DESC'
+    'SELECT * FROM COURSES WHERE IS_AI = 1 ORDER BY CREATED_TIME DESC LIMIT 3'
   );
   return saved;
 }
@@ -130,7 +128,7 @@ router.get('/', async (req, res) => {
       JOIN USER u ON u.USER_NUM = c.USER_NUM
       WHERE c.IS_AI = 1
       ORDER BY c.CREATED_TIME DESC
-      LIMIT 6
+      LIMIT 3
     `);
     res.json(rows);
   } catch (err) {
