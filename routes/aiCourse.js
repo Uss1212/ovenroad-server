@@ -149,4 +149,15 @@ router.post('/generate', requireAuth, async (req, res) => {
   }
 });
 
+/* POST /api/ai-course/cron — 외부 크론 서비스 전용 */
+router.post('/cron', async (req, res) => {
+  try {
+    const saved = await generateAICourses(3);
+    res.json({ message: `${saved.length}개의 AI 추천 코스가 생성되었습니다.` });
+  } catch (err) {
+    console.error('[크론] AI 코스 생성 실패:', err.message);
+    res.status(500).json({ message: '서버 오류: ' + err.message });
+  }
+});
+
 module.exports = { router, generateAICourses };
