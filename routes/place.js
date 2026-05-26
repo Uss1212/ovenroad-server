@@ -36,6 +36,16 @@ function isAdmin(user) {
   return user.grade === 'admin' || user.grade === 1 || user.grade === '1';
 }
 
+/* 장소 목록 캐시 (필터 없는 전체 조회만 대상, TTL 5분) */
+let placesListCache = null;
+let placesCacheTime = 0;
+const CACHE_TTL = 5 * 60 * 1000;
+
+function invalidatePlacesCache() {
+  placesListCache = null;
+  placesCacheTime = 0;
+}
+
 /* ── 0) 인기 메뉴 태그 목록 ── */
 /* GET /api/places/tags */
 /* 가장 많이 등록된 메뉴 이름을 태그로 돌려줌 (빵 종류별 대표 키워드) */
@@ -62,20 +72,46 @@ router.get('/tags', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const { keyword, region, category, menu, sort, limit } = req.query;
+    const noFilter = !keyword && !region && !category && !menu && !sort && !limit;
 
+    /* 필터 없는 전체 조회는 캐시 반환 */
+    if (noFilter && placesListCache && Date.now() - placesCacheTime < CACHE_TTL) {
+      return res.json(placesListCache);
+    }
+
+    /* JOIN 방식으로 한 번에 집계 (correlated subquery 제거) */
     let query = `
       SELECT
         p.PLACE_NUM, p.PLACE_NAME, p.ADDRESS, p.LATITUDE, p.LONGITUDE,
-        (SELECT AVG(pr.RATING) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) AS avgRating,
-        (SELECT COUNT(*) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) AS reviewCount,
-        (SELECT pi.IMAGE_URL FROM PLACE_IMAGE pi WHERE pi.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS thumbnailImage,
         p.GOOGLE_PLACE_ID,
-        (SELECT pc.CATEGORY_NAME FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS categoryName,
-        (SELECT pc.RIBBON_COUNT FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS ribbonCount,
-        (SELECT pc.CERTIFICATION FROM PLACE_CATEGORY pc WHERE pc.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS certification,
-        (SELECT GROUP_CONCAT(pm.MENU_NAME ORDER BY pm.MENU_NUM SEPARATOR ',')
-         FROM PLACE_MENU pm WHERE pm.PLACE_NUM = p.PLACE_NUM LIMIT 5) AS menuTags
+        ROUND(r.avgRating, 1)       AS avgRating,
+        COALESCE(r.reviewCount, 0)  AS reviewCount,
+        pi.IMAGE_URL                AS thumbnailImage,
+        pc.CATEGORY_NAME            AS categoryName,
+        pc.RIBBON_COUNT             AS ribbonCount,
+        pc.CERTIFICATION            AS certification,
+        pm.menuTags
       FROM PLACES p
+      LEFT JOIN (
+        SELECT PLACE_NUM, AVG(RATING) AS avgRating, COUNT(*) AS reviewCount
+        FROM PLACE_REVIEW GROUP BY PLACE_NUM
+      ) r  ON r.PLACE_NUM  = p.PLACE_NUM
+      LEFT JOIN (
+        SELECT PLACE_NUM, MIN(IMAGE_URL) AS IMAGE_URL
+        FROM PLACE_IMAGE GROUP BY PLACE_NUM
+      ) pi ON pi.PLACE_NUM = p.PLACE_NUM
+      LEFT JOIN (
+        SELECT PLACE_NUM,
+               MIN(CATEGORY_NAME) AS CATEGORY_NAME,
+               MIN(RIBBON_COUNT)  AS RIBBON_COUNT,
+               MIN(CERTIFICATION) AS CERTIFICATION
+        FROM PLACE_CATEGORY GROUP BY PLACE_NUM
+      ) pc ON pc.PLACE_NUM = p.PLACE_NUM
+      LEFT JOIN (
+        SELECT PLACE_NUM,
+               GROUP_CONCAT(MENU_NAME ORDER BY MENU_NUM SEPARATOR ',') AS menuTags
+        FROM PLACE_MENU GROUP BY PLACE_NUM
+      ) pm ON pm.PLACE_NUM = p.PLACE_NUM
       WHERE 1=1
     `;
     const params = [];
@@ -84,14 +120,14 @@ router.get('/', async (req, res) => {
     if (keyword) {
       query += ` AND (
         p.PLACE_NAME LIKE ? OR p.ADDRESS LIKE ?
-        OR p.PLACE_NUM IN (SELECT pm.PLACE_NUM FROM PLACE_MENU pm WHERE pm.MENU_NAME LIKE ?)
+        OR p.PLACE_NUM IN (SELECT PLACE_NUM FROM PLACE_MENU WHERE MENU_NAME LIKE ?)
       )`;
       params.push(`%${keyword}%`, `%${keyword}%`, `%${keyword}%`);
     }
 
     /* 메뉴 전용 필터 (태그 클릭 시) */
     if (menu) {
-      query += ' AND p.PLACE_NUM IN (SELECT pm.PLACE_NUM FROM PLACE_MENU pm WHERE pm.MENU_NAME LIKE ?)';
+      query += ' AND p.PLACE_NUM IN (SELECT PLACE_NUM FROM PLACE_MENU WHERE MENU_NAME LIKE ?)';
       params.push(`%${menu}%`);
     }
 
@@ -103,13 +139,12 @@ router.get('/', async (req, res) => {
 
     /* 카테고리 필터 */
     if (category) {
-      query += ' AND p.PLACE_NUM IN (SELECT pc.PLACE_NUM FROM PLACE_CATEGORY pc WHERE pc.CATEGORY_NAME = ?)';
+      query += ' AND p.PLACE_NUM IN (SELECT PLACE_NUM FROM PLACE_CATEGORY WHERE CATEGORY_NAME = ?)';
       params.push(category);
     }
 
     if (sort === 'rating') {
-      query += ' AND (SELECT COUNT(*) FROM PLACE_REVIEW pr WHERE pr.PLACE_NUM = p.PLACE_NUM) > 0';
-      query += ' ORDER BY avgRating DESC, reviewCount DESC, p.PLACE_NUM DESC';
+      query += ' AND r.reviewCount > 0 ORDER BY avgRating DESC, reviewCount DESC, p.PLACE_NUM DESC';
     } else {
       query += ' ORDER BY p.PLACE_NUM DESC';
     }
@@ -120,6 +155,12 @@ router.get('/', async (req, res) => {
     }
 
     const [rows] = await pool.query(query, params);
+
+    if (noFilter) {
+      placesListCache = rows;
+      placesCacheTime = Date.now();
+    }
+
     res.json(rows);
   } catch (error) {
     console.error('장소 목록 조회 에러:', error);
@@ -432,6 +473,7 @@ router.post('/', authMiddleware, async (req, res) => {
       await pool.query('INSERT INTO PLACE_CATEGORY (PLACE_NUM, CATEGORY_NAME) VALUES ?', [catValues]);
     }
 
+    invalidatePlacesCache();
     res.status(201).json({ message: '장소가 등록되었습니다.', placeNum });
   } catch (error) {
     console.error('장소 등록 에러:', error);
@@ -497,6 +539,7 @@ router.put('/:placeNum', authMiddleware, async (req, res) => {
       }
     }
 
+    invalidatePlacesCache();
     res.json({ message: '장소가 수정되었습니다.' });
   } catch (error) {
     console.error('장소 수정 에러:', error);
@@ -533,6 +576,7 @@ router.delete('/:placeNum', authMiddleware, async (req, res) => {
     /* 장소 삭제 */
     await pool.query('DELETE FROM PLACES WHERE PLACE_NUM = ?', [placeNum]);
 
+    invalidatePlacesCache();
     res.json({ message: '장소가 삭제되었습니다.' });
   } catch (error) {
     console.error('장소 삭제 에러:', error);

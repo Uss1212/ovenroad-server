@@ -73,9 +73,7 @@ async function generateAICourses(count = 3) {
   const jsonMatch = raw.match(/\[[\s\S]*\]/);
   const courses = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
 
-  /* 기존 AI 코스 삭제 후 COURSES 테이블에 새로 저장 */
   const AI_USER_NUM = 20;
-  await pool.query('DELETE FROM COURSES WHERE IS_AI = 1');
 
   for (const course of courses) {
     const [result] = await pool.query(
@@ -109,7 +107,7 @@ async function generateAICourses(count = 3) {
   }
 
   const [saved] = await pool.query(
-    'SELECT * FROM COURSES WHERE IS_AI = 1 ORDER BY CREATED_TIME DESC'
+    'SELECT * FROM COURSES WHERE IS_AI = 1 ORDER BY CREATED_TIME DESC LIMIT 3'
   );
   return saved;
 }
@@ -130,7 +128,7 @@ router.get('/', async (req, res) => {
       JOIN USER u ON u.USER_NUM = c.USER_NUM
       WHERE c.IS_AI = 1
       ORDER BY c.CREATED_TIME DESC
-      LIMIT 6
+      LIMIT 3
     `);
     res.json(rows);
   } catch (err) {
@@ -147,6 +145,21 @@ router.post('/generate', requireAuth, async (req, res) => {
     res.json({ message: `${saved.length}개의 AI 추천 코스가 생성되었습니다.`, courses: saved });
   } catch (err) {
     console.error('AI 코스 생성 에러:', err.message);
+    res.status(500).json({ message: '서버 오류: ' + err.message });
+  }
+});
+
+/* POST /api/ai-course/cron — 외부 크론 서비스 전용 (시크릿 키 인증) */
+router.post('/cron', async (req, res) => {
+  const secret = req.headers['x-cron-secret'] || req.query.secret;
+  if (!secret || secret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ message: '인증 실패' });
+  }
+  try {
+    const saved = await generateAICourses(3);
+    res.json({ message: `${saved.length}개의 AI 추천 코스가 생성되었습니다.` });
+  } catch (err) {
+    console.error('[크론] AI 코스 생성 실패:', err.message);
     res.status(500).json({ message: '서버 오류: ' + err.message });
   }
 });
