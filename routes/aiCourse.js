@@ -112,9 +112,11 @@ async function generateAICourses(count = 3) {
   return saved;
 }
 
-/* GET /api/ai-course — 최신 AI 추천 코스 목록 반환 */
+/* GET /api/ai-course — AI 추천 코스 목록 반환 */
+/* ?all=true 이면 전체, 기본값은 최신 3개 (메인 페이지용) */
 router.get('/', async (req, res) => {
   try {
+    const all = req.query.all === 'true';
     const [rows] = await pool.query(`
       SELECT c.*,
         u.NICKNAME AS author,
@@ -128,7 +130,7 @@ router.get('/', async (req, res) => {
       JOIN USER u ON u.USER_NUM = c.USER_NUM
       WHERE c.IS_AI = 1
       ORDER BY c.CREATED_TIME DESC
-      LIMIT 3
+      ${all ? '' : 'LIMIT 3'}
     `);
     res.json(rows);
   } catch (err) {
