@@ -9,8 +9,7 @@ const courseRouter = require('./routes/course');
 const placeRouter = require('./routes/place');
 const noticeRouter = require('./routes/notice');
 const uploadRouter = require('./routes/upload');
-const { router: aiCourseRouter, generateAICourses } = require('./routes/aiCourse');
-const cron = require('node-cron');
+const { router: aiCourseRouter } = require('./routes/aiCourse');
 
 const pool = require('./db');
 
@@ -50,16 +49,7 @@ async function runMigrations() {
 }
 runMigrations().catch(err => console.error('마이그레이션 에러:', err.message));
 
-/* 매일 오전 9시(KST = UTC+9, 서버 UTC 기준 00:00)에 AI 코스 3개 자동 생성 */
-cron.schedule('0 0 * * *', async () => {
-  console.log('[크론] AI 추천 코스 자동 생성 시작');
-  try {
-    const saved = await generateAICourses(3);
-    console.log(`[크론] AI 추천 코스 ${saved.length}개 생성 완료`);
-  } catch (err) {
-    console.error('[크론] AI 코스 생성 실패:', err.message);
-  }
-}, { timezone: 'Asia/Seoul' });
+
 
 
 app.use(cors({
