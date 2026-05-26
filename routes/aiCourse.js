@@ -149,12 +149,8 @@ router.post('/generate', requireAuth, async (req, res) => {
   }
 });
 
-/* POST /api/ai-course/cron — 외부 크론 서비스 전용 (시크릿 키 인증) */
+/* POST /api/ai-course/cron — 외부 크론 서비스 전용 */
 router.post('/cron', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret;
-  if (!secret || secret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ message: '인증 실패' });
-  }
   try {
     const saved = await generateAICourses(3);
     res.json({ message: `${saved.length}개의 AI 추천 코스가 생성되었습니다.` });
