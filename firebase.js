@@ -10,20 +10,21 @@ const admin = require('firebase-admin');
 /* 환경변수(FIREBASE_SERVICE_ACCOUNT)에서 서비스 계정 키를 가져옴 */
 /* 환경변수가 없으면 로컬의 json 파일을 사용 (개발용) */
 let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-} else {
-  serviceAccount = require('./firebase-service-account.json');
+let bucket = null;
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  } else {
+    serviceAccount = require('./firebase-service-account.json');
+  }
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    storageBucket: 'ovenroad-a0dc3.firebasestorage.app',
+  });
+  bucket = admin.storage().bucket();
+} catch (err) {
+  console.warn('⚠️ Firebase 초기화 실패 (이미지 업로드 비활성화):', err.message);
 }
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  /* Storage 버킷 주소 (Firebase 콘솔 → Storage에서 확인 가능) */
-  storageBucket: 'ovenroad-a0dc3.firebasestorage.app',
-});
-
-/* --- Storage 버킷 가져오기 --- */
-const bucket = admin.storage().bucket();
 
 /* --- 이미지 업로드 함수 --- */
 /* buffer: 이미지 파일 데이터 (Buffer) */

@@ -796,4 +796,75 @@ router.get('/:placeNum/google-details', async (req, res) => {
   }
 });
 
+/* ── 빵집 좋아요 토글 ── */
+router.post('/:placeNum/like', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const userNum = req.user.userNum;
+    const [existing] = await pool.query('SELECT * FROM PLACE_LIKE WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+    if (existing.length > 0) {
+      await pool.query('DELETE FROM PLACE_LIKE WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+      res.json({ liked: false });
+    } else {
+      await pool.query('INSERT INTO PLACE_LIKE (PLACE_NUM, USER_NUM) VALUES (?, ?)', [placeNum, userNum]);
+      res.json({ liked: true });
+    }
+  } catch (error) {
+    console.error('빵집 좋아요 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 빵집 북마크 토글 ── */
+router.post('/:placeNum/bookmark', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const userNum = req.user.userNum;
+    const [existing] = await pool.query('SELECT * FROM PLACE_BOOKMARK WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+    if (existing.length > 0) {
+      await pool.query('DELETE FROM PLACE_BOOKMARK WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+      res.json({ bookmarked: false });
+    } else {
+      await pool.query('INSERT INTO PLACE_BOOKMARK (PLACE_NUM, USER_NUM) VALUES (?, ?)', [placeNum, userNum]);
+      res.json({ bookmarked: true });
+    }
+  } catch (error) {
+    console.error('빵집 북마크 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 빵집 좋아요/북마크 상태 조회 ── */
+router.get('/:placeNum/status', authMiddleware, async (req, res) => {
+  try {
+    const { placeNum } = req.params;
+    const userNum = req.user.userNum;
+    const [likeRows] = await pool.query('SELECT 1 FROM PLACE_LIKE WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+    const [bmRows] = await pool.query('SELECT 1 FROM PLACE_BOOKMARK WHERE PLACE_NUM = ? AND USER_NUM = ?', [placeNum, userNum]);
+    res.json({ liked: likeRows.length > 0, bookmarked: bmRows.length > 0 });
+  } catch (error) {
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 내가 북마크한 빵집 목록 ── */
+router.get('/my/bookmarks', authMiddleware, async (req, res) => {
+  try {
+    const userNum = req.user.userNum;
+    const [rows] = await pool.query(
+      `SELECT p.PLACE_NUM, p.PLACE_NAME, p.ADDRESS,
+        (SELECT pi.IMAGE_URL FROM PLACE_IMAGE pi WHERE pi.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS thumbnailImage
+       FROM PLACE_BOOKMARK pb
+       JOIN PLACES p ON pb.PLACE_NUM = p.PLACE_NUM
+       WHERE pb.USER_NUM = ?
+       ORDER BY pb.CREATED_AT DESC`,
+      [userNum]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('북마크 목록 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 module.exports = router;
