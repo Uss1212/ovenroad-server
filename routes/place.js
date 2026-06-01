@@ -414,7 +414,17 @@ router.get('/:placeNum', async (req, res) => {
 
     /* 이 장소가 포함된 코스 목록 */
     const [courses] = await pool.query(`
-      SELECT c.COURSE_NUM, c.TITLE, c.SUBTITLE
+      SELECT c.COURSE_NUM, c.TITLE, c.SUBTITLE, c.COVER_IMAGE,
+        COALESCE(
+          (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp2
+           JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp2.PLACE_NUM
+           WHERE cp2.COURSE_NUM = c.COURSE_NUM AND cp2.IS_THUMBNAIL = 1
+           LIMIT 1),
+          (SELECT pi.IMAGE_URL FROM COURSE_PLACE cp3
+           JOIN PLACE_IMAGE pi ON pi.PLACE_NUM = cp3.PLACE_NUM
+           WHERE cp3.COURSE_NUM = c.COURSE_NUM
+           LIMIT 1)
+        ) AS thumbnailImage
       FROM COURSES c
       JOIN COURSE_PLACE cp ON cp.COURSE_NUM = c.COURSE_NUM
       WHERE cp.PLACE_NUM = ?
