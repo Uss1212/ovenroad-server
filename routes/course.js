@@ -446,14 +446,16 @@ router.post('/:courseNum/like', authMiddleware, async (req, res) => {
     );
 
     if (existing.length > 0) {
-      /* 이미 좋아요 → 취소 (삭제) */
       await pool.query('DELETE FROM COURSE_LIKE WHERE COURSE_NUM = ? AND USER_NUM = ?', [courseNum, userNum]);
-      res.json({ message: '좋아요가 취소되었습니다.', liked: false });
     } else {
-      /* 좋아요 안 함 → 추가 */
       await pool.query('INSERT INTO COURSE_LIKE (COURSE_NUM, USER_NUM) VALUES (?, ?)', [courseNum, userNum]);
-      res.json({ message: '좋아요를 눌렀습니다.', liked: true });
     }
+
+    const [[{ likeCount }]] = await pool.query(
+      'SELECT COUNT(*) AS likeCount FROM COURSE_LIKE WHERE COURSE_NUM = ?',
+      [courseNum]
+    );
+    res.json({ liked: existing.length === 0, likeCount });
   } catch (error) {
     console.error('좋아요 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
