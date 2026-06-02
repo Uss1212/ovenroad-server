@@ -34,9 +34,26 @@ async function generateAICourses(count = 3) {
 
   if (places.length === 0) throw new Error('빵집 데이터가 없습니다.');
 
+  /* 최근 14일간 생성된 AI 코스 제목/테마 → 중복 방지용 */
+  const [recentCourses] = await pool.query(
+    `SELECT TITLE, TAGS FROM COURSES
+     WHERE IS_AI = 1 AND CREATED_TIME >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+     ORDER BY CREATED_TIME DESC LIMIT 20`
+  );
+  const recentThemes = recentCourses.map(c => {
+    try {
+      const tags = typeof c.TAGS === 'string' ? JSON.parse(c.TAGS) : c.TAGS;
+      return tags?.theme ? `${c.TITLE} (${tags.theme})` : c.TITLE;
+    } catch { return c.TITLE; }
+  });
+
   const placeText = places.map(p =>
     `- ${p.PLACE_NAME} (${p.ADDRESS || '서울'}) | 메뉴: ${p.MENUS || '다양한 빵'}`
   ).join('\n');
+
+  const avoidText = recentThemes.length > 0
+    ? `\n\n❌ 최근 2주간 이미 만든 코스 (이 테마들과 겹치지 않게 해주세요):\n${recentThemes.map(t => `- ${t}`).join('\n')}`
+    : '';
 
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -47,13 +64,14 @@ async function generateAICourses(count = 3) {
         role: 'system',
         content: `당신은 서울의 베이커리 투어 코스를 기획하는 전문가입니다.
 주어진 빵집 목록을 바탕으로 테마별 빵집 투어 코스를 JSON 배열로 생성해주세요.
+테마는 매번 신선하고 다양하게: 동네 산책, 시간대(아침/브런치/야식), 특정 재료(흑임자/말차/치즈), 분위기(레트로/모던/아늑한), 목적(데이트/혼자/친구) 등 창의적으로 구성하세요.
 반드시 아래 형식의 JSON만 반환하고, 다른 텍스트는 포함하지 마세요:
 [
   {
     "title": "코스 제목",
     "subtitle": "한 줄 설명",
     "description": "코스 설명 (2-3문장)",
-    "theme": "테마 (예: 크루아상 탐방, 식빵 장인, 디저트 천국 등)",
+    "theme": "테마",
     "places": [
       { "name": "빵집 이름", "reason": "선택 이유 한 줄" }
     ]
@@ -62,10 +80,10 @@ async function generateAICourses(count = 3) {
       },
       {
         role: 'user',
-        content: `다음 빵집 목록으로 서로 다른 테마의 베이커리 투어 코스 ${count}개를 만들어주세요. 각 코스는 3-5개의 빵집으로 구성하세요.\n\n${placeText}`
+        content: `다음 빵집 목록으로 서로 다른 테마의 베이커리 투어 코스 ${count}개를 만들어주세요. 각 코스는 3-5개의 빵집으로 구성하세요.${avoidText}\n\n빵집 목록:\n${placeText}`
       }
     ],
-    temperature: 0.8,
+    temperature: 1.0,
     max_tokens: 2000,
   });
 

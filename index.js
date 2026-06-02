@@ -10,6 +10,7 @@ const placeRouter = require('./routes/place');
 const noticeRouter = require('./routes/notice');
 const uploadRouter = require('./routes/upload');
 const { router: aiCourseRouter } = require('./routes/aiCourse');
+const btiRouter = require('./routes/bti');
 
 const pool = require('./db');
 
@@ -55,7 +56,12 @@ runMigrations().catch(err => console.error('마이그레이션 에러:', err.mes
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin) return callback(null, true);
-    if (origin.endsWith('.vercel.app') || origin.startsWith('http://localhost')) {
+    if (
+      origin.endsWith('.vercel.app') ||
+      origin.startsWith('http://localhost') ||
+      origin === 'https://www.ovenroad.kr' ||
+      origin === 'https://ovenroad.kr'
+    ) {
       return callback(null, true);
     }
     callback(new Error('CORS 차단'));
@@ -71,6 +77,7 @@ app.use('/api/places', placeRouter);
 app.use('/api/notice', noticeRouter);
 app.use('/api/upload', uploadRouter);
 app.use('/api/ai-course', aiCourseRouter);
+app.use('/api/bti', btiRouter);
 
 app.get('/', (req, res) => {
   res.json({ message: '오븐로드 백엔드 서버가 실행 중입니다!' });
