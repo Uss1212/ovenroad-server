@@ -486,4 +486,56 @@ router.post('/:courseNum/scrap', authMiddleware, async (req, res) => {
   }
 });
 
+/* ── 8) 코스 댓글 목록 조회 ── */
+router.get('/:courseNum/comments', async (req, res) => {
+  try {
+    const { courseNum } = req.params;
+    const [rows] = await pool.query(
+      `SELECT c.*, u.NICKNAME, u.PROFILE_IMAGE
+       FROM COURSE_COMMENT c
+       JOIN USER u ON c.USER_NUM = u.USER_NUM
+       WHERE c.COURSE_NUM = ?
+       ORDER BY c.CREATED_TIME ASC`,
+      [courseNum]
+    );
+    res.json(rows);
+  } catch (error) {
+    console.error('댓글 조회 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 9) 코스 댓글 작성 ── */
+router.post('/:courseNum/comments', authMiddleware, async (req, res) => {
+  try {
+    const { courseNum } = req.params;
+    const { userNum, content, parentNum } = req.body;
+    const [result] = await pool.query(
+      `INSERT INTO COURSE_COMMENT (COURSE_NUM, USER_NUM, CONTENT, PARENT_NUM)
+       VALUES (?, ?, ?, ?)`,
+      [courseNum, userNum, content, parentNum || null]
+    );
+    res.json({ message: '댓글이 작성되었습니다.', commentNum: result.insertId });
+  } catch (error) {
+    console.error('댓글 작성 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
+/* ── 10) 코스 댓글 삭제 ── */
+router.delete('/:courseNum/comments/:commentNum', authMiddleware, async (req, res) => {
+  try {
+    const { commentNum } = req.params;
+    const userNum = req.user.userNum;
+    await pool.query(
+      'DELETE FROM COURSE_COMMENT WHERE COMMENT_NUM = ? AND USER_NUM = ?',
+      [commentNum, userNum]
+    );
+    res.json({ message: '댓글이 삭제되었습니다.' });
+  } catch (error) {
+    console.error('댓글 삭제 에러:', error);
+    res.status(500).json({ message: '서버 오류가 발생했습니다.' });
+  }
+});
+
 module.exports = router;

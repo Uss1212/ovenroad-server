@@ -938,17 +938,30 @@ router.get('/:userNum/my-reviews', authMiddleware, requireSameUser, async (req, 
   try {
     const { userNum } = req.params;
 
-    const [rows] = await pool.query(`
+    const [placeReviews] = await pool.query(`
       SELECT
         pr.REVIEW_NUM, pr.RATING, pr.CONTENT, pr.CREATED_TIME,
-        p.PLACE_NUM, p.PLACE_NAME
+        p.PLACE_NUM, p.PLACE_NAME,
+        (SELECT pi.IMAGE_URL FROM PLACE_IMAGE pi WHERE pi.PLACE_NUM = p.PLACE_NUM LIMIT 1) AS IMAGE_URL,
+        'place' AS REVIEW_TYPE
       FROM PLACE_REVIEW pr
       JOIN PLACES p ON p.PLACE_NUM = pr.PLACE_NUM
       WHERE pr.USER_NUM = ?
-      ORDER BY pr.CREATED_TIME DESC
     `, [userNum]);
 
-    res.json(rows);
+    const [courseComments] = await pool.query(`
+      SELECT
+        cc.COMMENT_NUM AS REVIEW_NUM, NULL AS RATING, cc.CONTENT, cc.CREATED_TIME,
+        c.COURSE_NUM AS PLACE_NUM, c.TITLE AS PLACE_NAME,
+        c.COVER_IMAGE AS IMAGE_URL,
+        'course' AS REVIEW_TYPE
+      FROM COURSE_COMMENT cc
+      JOIN COURSES c ON c.COURSE_NUM = cc.COURSE_NUM
+      WHERE cc.USER_NUM = ? AND cc.PARENT_NUM IS NULL
+    `, [userNum]);
+
+    const all = [...placeReviews, ...courseComments].sort((a, b) => new Date(b.CREATED_TIME) - new Date(a.CREATED_TIME));
+    res.json(all);
   } catch (error) {
     console.error('내 리뷰 조회 에러:', error);
     res.status(500).json({ message: '서버 오류가 발생했습니다.' });
