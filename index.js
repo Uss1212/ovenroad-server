@@ -56,7 +56,12 @@ runMigrations().catch(err => console.error('마이그레이션 에러:', err.mes
 app.use(cors({
   origin: function(origin, callback) {
     if (!origin) return callback(null, true);
-    if (origin.endsWith('.vercel.app') || origin.startsWith('http://localhost')) {
+    if (
+      origin.endsWith('.vercel.app') ||
+      origin.startsWith('http://localhost') ||
+      origin === 'https://www.ovenroad.kr' ||
+      origin === 'https://ovenroad.kr'
+    ) {
       return callback(null, true);
     }
     callback(new Error('CORS 차단'));
